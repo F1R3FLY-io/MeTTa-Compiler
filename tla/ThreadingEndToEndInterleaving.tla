@@ -16,6 +16,8 @@ CONSTANTS
     IncludeDispatchRoot,
     IncludeBatchRoot,
     CloseAdmission,
+    WorkerSpawnBeforeLatch,
+    WorkerMissingLatch,
     ClaimCronBeforeDispatch,
     PublishCronStopBeforeIdle,
     ReturnCronHandleSender,
@@ -72,6 +74,9 @@ VARIABLES
     dispatchRooted,
     batchRooted,
     lateWorkerLive,
+    workerSpawnPhase,
+    workerSpawnLatch,
+    workerExists,
     valueFreed,
     inFlight,
     cronWorkerRunning,
@@ -105,11 +110,18 @@ VARIABLES
     workPoolLifecyclePhase,
     workPoolLifecycleScenario
 
-baseVars ==
+baseNoSpawnVars ==
     <<phase, wave, running, completed, consumerBeforeProducer,
       conflictSameWave, rootsBuilt, workerRooted, lateWorkerLive,
       valueFreed, inFlight, cronWorkerRunning, cronOverlap,
       cronStopRequested, cronDispatchedAgain, dispatchCount>>
+
+baseVars ==
+    <<phase, wave, running, completed, consumerBeforeProducer,
+      conflictSameWave, rootsBuilt, workerRooted, lateWorkerLive,
+      workerSpawnPhase, workerSpawnLatch, workerExists, valueFreed,
+      inFlight, cronWorkerRunning, cronOverlap, cronStopRequested,
+      cronDispatchedAgain, dispatchCount>>
 
 startupVars ==
     <<startupPhase, cronReadyObserved, cronStartupTaskSubmitted,
@@ -117,6 +129,9 @@ startupVars ==
 
 gcBoundaryVars ==
     <<dispatchFanoutLive, batchHandoffLive, dispatchRooted, batchRooted>>
+
+workerSpawnVars ==
+    <<workerSpawnPhase, workerSpawnLatch, workerExists>>
 
 workPoolStartupVars ==
     <<workPoolSubmitted, workPoolQueue, workPoolCompleted,
@@ -152,6 +167,8 @@ BooleanConstantsOK ==
     /\ IncludeDispatchRoot \in BOOLEAN
     /\ IncludeBatchRoot \in BOOLEAN
     /\ CloseAdmission \in BOOLEAN
+    /\ WorkerSpawnBeforeLatch \in BOOLEAN
+    /\ WorkerMissingLatch \in BOOLEAN
     /\ ClaimCronBeforeDispatch \in BOOLEAN
     /\ PublishCronStopBeforeIdle \in BOOLEAN
     /\ ReturnCronHandleSender \in BOOLEAN
@@ -220,6 +237,9 @@ TypeOK ==
     /\ dispatchRooted \in BOOLEAN
     /\ batchRooted \in BOOLEAN
     /\ lateWorkerLive \in BOOLEAN
+    /\ workerSpawnPhase \in {"start", "latched", "spawned"}
+    /\ workerSpawnLatch \in BOOLEAN
+    /\ workerExists \in BOOLEAN
     /\ valueFreed \in BOOLEAN
     /\ inFlight \in BOOLEAN
     /\ cronWorkerRunning \in BOOLEAN
@@ -286,6 +306,9 @@ Init ==
     /\ dispatchRooted = FALSE
     /\ batchRooted = FALSE
     /\ lateWorkerLive = FALSE
+    /\ workerSpawnPhase = "start"
+    /\ workerSpawnLatch = FALSE
+    /\ workerExists = FALSE
     /\ valueFreed = FALSE
     /\ inFlight = FALSE
     /\ cronWorkerRunning = FALSE
@@ -395,6 +418,26 @@ AdmitLateWorker ==
                   batchRooted, valueFreed, inFlight, cronWorkerRunning,
                   cronOverlap, cronStopRequested, cronDispatchedAgain,
                   dispatchCount>>
+
+WorkerLatch ==
+    /\ workerSpawnPhase = "start"
+    /\ ~WorkerMissingLatch
+    /\ workerSpawnPhase' = "latched"
+    /\ workerSpawnLatch' = TRUE
+    /\ UNCHANGED workerExists
+
+WorkerSpawnAfterLatch ==
+    /\ workerSpawnPhase = "latched"
+    /\ workerSpawnPhase' = "spawned"
+    /\ workerExists' = TRUE
+    /\ UNCHANGED workerSpawnLatch
+
+WorkerSpawnWithoutPriorLatch ==
+    /\ workerSpawnPhase = "start"
+    /\ (WorkerSpawnBeforeLatch \/ WorkerMissingLatch)
+    /\ workerSpawnPhase' = "spawned"
+    /\ workerExists' = TRUE
+    /\ UNCHANGED workerSpawnLatch
 
 Sweep ==
     /\ rootsBuilt
@@ -785,27 +828,33 @@ ThreadingNext ==
     \/ Done
 
 Next ==
-    \/ (ThreadingNext /\ UNCHANGED startupVars /\ UNCHANGED workPoolVars)
-    \/ CronStartupRun
-    \/ CronStartupSubmitAfterReady
-    \/ CronStartupPollCheckEvents
-    \/ CronStartupPollDrainChannel
-    \/ CronStartupNoSubmittedTask
-    \/ CronStartupLoseWithoutPollPath
-    \/ WorkPoolSubmit
-    \/ WorkPoolStart
-    \/ WorkPoolDrain
-    \/ WorkPoolFinish
-    \/ WorkPoolStuck
-    \/ WorkPoolRunFirstTaskPanic
-    \/ WorkPoolRunFirstAccountingPanic
-    \/ WorkPoolRunSecond
-    \/ WorkPoolAgeOld
-    \/ WorkPoolEnqueueHigh
-    \/ WorkPoolPopPriority
-    \/ WorkPoolOverflowSpawn
-    \/ WorkPoolLifecycleDoubleUnpark
-    \/ WorkPoolLifecycleRespawnParked
+    \/ (ThreadingNext /\ UNCHANGED startupVars /\ UNCHANGED workPoolVars /\
+        UNCHANGED <<workerSpawnPhase, workerSpawnLatch, workerExists>>)
+    \/ (CronStartupRun /\ UNCHANGED <<workerSpawnPhase, workerSpawnLatch, workerExists>>)
+    \/ (CronStartupSubmitAfterReady /\ UNCHANGED <<workerSpawnPhase, workerSpawnLatch, workerExists>>)
+    \/ (CronStartupPollCheckEvents /\ UNCHANGED <<workerSpawnPhase, workerSpawnLatch, workerExists>>)
+    \/ (CronStartupPollDrainChannel /\ UNCHANGED <<workerSpawnPhase, workerSpawnLatch, workerExists>>)
+    \/ (CronStartupNoSubmittedTask /\ UNCHANGED <<workerSpawnPhase, workerSpawnLatch, workerExists>>)
+    \/ (CronStartupLoseWithoutPollPath /\ UNCHANGED <<workerSpawnPhase, workerSpawnLatch, workerExists>>)
+    \/ (WorkPoolSubmit /\ UNCHANGED <<workerSpawnPhase, workerSpawnLatch, workerExists>>)
+    \/ (WorkPoolStart /\ UNCHANGED <<workerSpawnPhase, workerSpawnLatch, workerExists>>)
+    \/ (WorkPoolDrain /\ UNCHANGED <<workerSpawnPhase, workerSpawnLatch, workerExists>>)
+    \/ (WorkPoolFinish /\ UNCHANGED <<workerSpawnPhase, workerSpawnLatch, workerExists>>)
+    \/ (WorkPoolStuck /\ UNCHANGED <<workerSpawnPhase, workerSpawnLatch, workerExists>>)
+    \/ (WorkPoolRunFirstTaskPanic /\ UNCHANGED <<workerSpawnPhase, workerSpawnLatch, workerExists>>)
+    \/ (WorkPoolRunFirstAccountingPanic /\ UNCHANGED <<workerSpawnPhase, workerSpawnLatch, workerExists>>)
+    \/ (WorkPoolRunSecond /\ UNCHANGED <<workerSpawnPhase, workerSpawnLatch, workerExists>>)
+    \/ (WorkPoolAgeOld /\ UNCHANGED <<workerSpawnPhase, workerSpawnLatch, workerExists>>)
+    \/ (WorkPoolEnqueueHigh /\ UNCHANGED <<workerSpawnPhase, workerSpawnLatch, workerExists>>)
+    \/ (WorkPoolPopPriority /\ UNCHANGED <<workerSpawnPhase, workerSpawnLatch, workerExists>>)
+    \/ (WorkPoolOverflowSpawn /\ UNCHANGED <<workerSpawnPhase, workerSpawnLatch, workerExists>>)
+    \/ (WorkPoolLifecycleDoubleUnpark /\ UNCHANGED <<workerSpawnPhase, workerSpawnLatch, workerExists>>)
+    \/ (WorkPoolLifecycleRespawnParked /\ UNCHANGED <<workerSpawnPhase, workerSpawnLatch, workerExists>>)
+    \/ (WorkerLatch /\ UNCHANGED <<baseNoSpawnVars, gcBoundaryVars, startupVars, workPoolVars>>)
+    \/ (WorkerSpawnAfterLatch /\
+        UNCHANGED <<baseNoSpawnVars, gcBoundaryVars, startupVars, workPoolVars>>)
+    \/ (WorkerSpawnWithoutPriorLatch /\
+        UNCHANGED <<baseNoSpawnVars, gcBoundaryVars, startupVars, workPoolVars>>)
     \/ Idle
 
 Spec ==
@@ -921,6 +970,12 @@ MaximalIndependentParallelism ==
 NoLiveValueSwept ==
     ~valueFreed
 
+WorkerSpawnLatchPrecedesWorker ==
+    workerExists => workerSpawnLatch
+
+WorkerSpawnLatchClosesMidloopGate ==
+    ~(workerExists /\ ~workerSpawnLatch)
+
 NoOverlappingCronDispatch ==
     ~cronOverlap
 
@@ -1001,6 +1056,8 @@ EndToEndSafe ==
     /\ ActiveNoBudgetParallelSafe
     /\ MaximalIndependentParallelism
     /\ NoLiveValueSwept
+    /\ WorkerSpawnLatchPrecedesWorker
+    /\ WorkerSpawnLatchClosesMidloopGate
     /\ NoOverlappingCronDispatch
     /\ CronStopPreventsRedispatch
     /\ CronStartupReadyWaitCompletes

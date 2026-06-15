@@ -1226,10 +1226,10 @@ facts the proofs rely on:
 - Threading end-to-end interleaving envelope (`formal/rocq/gc/ThreadingEndToEndInterleaving.v`,
   `tla/ThreadingEndToEndInterleaving.tla`, 2026-06-14) — composes scheduler
   dependency waves, direct fanout, active-worker root publication, closed worker
-  admission, active direct-fanout gates, sweep, recurring-cron dispatch, cron
-  startup delivery, WorkPool startup drain, WorkPool panic isolation, and the
-  GC-facing scheduler boundary for live-dispatch plus async batch roots into one
-  TLC state machine.
+  admission, eval-worker spawn latching, active direct-fanout gates, sweep,
+  recurring-cron dispatch, cron startup delivery, WorkPool startup drain,
+  WorkPool panic isolation, and the GC-facing scheduler boundary for
+  live-dispatch plus async batch roots into one TLC state machine.
   Positive dependency-bearing and independent configs preserve `EndToEndSafe`.
   Negative discriminators violate it for missing dependency edges, active
   direct-fanout without purity or budget gates, partial direct-fanout dispatch,
@@ -1238,10 +1238,11 @@ facts the proofs rely on:
   dynamic eval that bypasses the dynamic-eval blocker, state mutation through
   the pure no-budget path, strict I/O through the pure no-budget path, missing
   active-worker roots, missing dispatch roots, missing batch roots, open
-  admission across a root snapshot, unclaimed recurring cron dispatch, and a
-  pooled recurring worker that clears `in_flight` without first publishing the
-  terminal stop state.  The composed cron startup discriminator separately
-  rejects a submitted startup task when neither `CheckEvents` nor
+  admission across a root snapshot, worker spawn before the sticky latch, missing
+  worker-spawn latch, unclaimed recurring cron dispatch, and a pooled recurring
+  worker that clears `in_flight` without first publishing the terminal stop
+  state.  The composed cron startup discriminator separately rejects a submitted
+  startup task when neither `CheckEvents` nor
   `DrainChannel` polls the cron task channel.  Composed WorkPool discriminators
   reject lossy startup enqueue, missing inner task-panic heartbeat publication,
   and missing outer accounting-panic catch.  The envelope now also composes
@@ -1252,7 +1253,9 @@ facts the proofs rely on:
   composes WorkPool priority-aging fairness: pop-time score recomputation is
   required before dequeue, and the stale-priority discriminator violates
   `WorkPoolOldPopsAfterAging` by popping newer high-priority work before the
-  aged older task.
+  aged older task.  The composed spawn-latch discriminators violate
+  `WorkerSpawnLatchPrecedesWorker`, matching either a pool handoff that spawns
+  before storing `worker_ever_spawned` or a handoff site that omits the latch.
 - JIT Long boxing store selection (`formal/rocq/gc/JitLongBoxStoreSelection.v`,
   `tla/JitLongBoxStoreSelection.tla`, 2026-06-14) — proves out-of-inline-range
   JIT Long boxing selects the compiled store: index builds allocate through the

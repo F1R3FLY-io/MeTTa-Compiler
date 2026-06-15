@@ -272,8 +272,12 @@ The formal lane covers the main scheduler obligations:
 - `ThreadingEndToEndInterleaving.v` and
   `ThreadingEndToEndInterleaving.tla` compose scheduler dependency waves,
   direct-fanout maximality, active-worker GC roots, closed worker admission, and
-  recurring-cron in-flight claims into one small interleaving envelope.  The
-  envelope also includes cron startup delivery, so a task submitted through the
+  eval-worker spawn latching into one small interleaving envelope.  The latch
+  obligation requires each worker handoff to publish the sticky
+  `worker_ever_spawned` latch before the worker can exist, so the single-threaded
+  mid-loop index-GC gate cannot stay open after eval-worker parallelism becomes
+  possible.  The envelope also includes recurring-cron in-flight claims and cron
+  startup delivery, so a task submitted through the
   returned handle after the ready receiver observes startup is rejected if the
   cron event loop has no `CheckEvents` or `DrainChannel` polling path.  The same
   envelope composes WorkPool startup drain and panic isolation: startup
@@ -576,6 +580,8 @@ The composed end-to-end envelope is modeled by:
 - `tla/MC_ThreadingEndToEndInterleaving_missing_dispatch_root.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_missing_batch_root.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_open_admission.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_spawn_before_latch.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_missing_spawn_latch.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_unclaimed_cron.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_cron_no_stop.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_startup_no_poll.cfg`
@@ -595,9 +601,11 @@ maximal-before-cap, or branch-parallel class gates, dynamic eval bypasses the
 dynamic-eval blocker, state mutation is allowed through the pure no-budget
 path, strict I/O is allowed through the pure no-budget path, active worker
 roots are omitted, dispatch or async batch roots are omitted, worker admission
-stays open across the root snapshot, or recurring cron dispatch submits without
-claiming `in_flight`, or a pooled recurring worker clears `in_flight` without
-first publishing the terminal stop state.
+stays open across the root snapshot, worker spawn reaches the pool before the
+sticky spawn latch is stored, a handoff site omits that latch entirely, or
+recurring cron dispatch submits without claiming `in_flight`, or a pooled
+recurring worker clears `in_flight` without first publishing the terminal stop
+state.
 The composed WorkPool discriminators additionally reject overflow spawning
 that bypasses the live-worker cap, double-unpark accounting that counts one
 parked worker twice, respawning a parked replacement without incrementing

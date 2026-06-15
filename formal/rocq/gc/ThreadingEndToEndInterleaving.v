@@ -3,8 +3,8 @@
     This proof composes the audit obligations that were previously checked in
     separate files: scheduler reordering, effect-conflict exclusion, direct
     fanout maximality for independent work, active-worker GC rooting, closed
-    worker admission during a root snapshot, and recurring cron in_flight
-    claims plus stop-before-redispatch.
+    worker admission during a root snapshot, eval-worker spawn latching, and
+    recurring cron in_flight claims plus stop-before-redispatch.
 *)
 
 From Stdlib Require Import Bool.Bool.
@@ -15,6 +15,7 @@ Require Import CronStartupDelivery.
 Require Import SchedulerActiveFanoutGate.
 Require Import SchedulerDynamicEvalGate.
 Require Import SchedulerPriorityFairness.
+Require Import SchedulerSpawnLatch.
 Require Import SchedulerTransducerParallelism.
 Require Import WorkPoolLifecycle.
 Require Import WorkPoolOverflowCap.
@@ -26,6 +27,7 @@ Import MeTTaTron_GC_CronStartupDelivery.
 Import MeTTaTron_GC_SchedulerActiveFanoutGate.
 Import MeTTaTron_GC_SchedulerDynamicEvalGate.
 Import MeTTaTron_GC_SchedulerPriorityFairness.
+Import MeTTaTron_GC_SchedulerSpawnLatch.
 Import MeTTaTron_GC_SchedulerTransducerParallelism.
 Import MeTTaTron_GC_WorkPoolLifecycle.
 Import MeTTaTron_GC_WorkPoolPanicIsolation.
@@ -214,6 +216,54 @@ Section EndToEndModel.
         false worker_rooted false false false false true = true.
   Proof.
     intros []; reflexivity.
+  Qed.
+
+  Record SpawnLatchConfig : Type := {
+    spawn_latch_at : nat;
+    spawn_worker_at : nat;
+    spawn_check_at : nat
+  }.
+
+  Definition spawn_trace (c : SpawnLatchConfig) : SpawnTrace :=
+    {| latch_at := spawn_latch_at c;
+       spawn_at := spawn_worker_at c;
+       check_at := spawn_check_at c |}.
+
+  Definition spawn_latch_safe (c : SpawnLatchConfig) : Prop :=
+    latch_before_spawn (spawn_trace c) /\
+    (worker_exists_at_check (spawn_trace c) ->
+     ~ midloop_gate_open_at_check True True 1 (spawn_trace c)).
+
+  Definition complete_spawn_latch : SpawnLatchConfig :=
+    {| spawn_latch_at := 0;
+       spawn_worker_at := 1;
+       spawn_check_at := 2 |}.
+
+  Definition spawn_before_latch : SpawnLatchConfig :=
+    {| spawn_latch_at := 2;
+       spawn_worker_at := 0;
+       spawn_check_at := 1 |}.
+
+  Theorem complete_spawn_latch_safe :
+    spawn_latch_safe complete_spawn_latch.
+  Proof.
+    unfold spawn_latch_safe, complete_spawn_latch, spawn_trace.
+    simpl.
+    split.
+    - unfold latch_before_spawn. simpl. lia.
+    - intros Hworker.
+      apply latch_before_spawn_blocks_worker_midloop_overlap.
+      + unfold latch_before_spawn. simpl. lia.
+      + exact Hworker.
+  Qed.
+
+  Theorem spawn_before_latch_exposes_latch_gap :
+    ~ spawn_latch_safe spawn_before_latch.
+  Proof.
+    intros [Hbefore _].
+    unfold latch_before_spawn, spawn_trace, spawn_before_latch in Hbefore.
+    simpl in Hbefore.
+    lia.
   Qed.
 
   Record CronState : Type := {
@@ -1141,6 +1191,7 @@ Section EndToEndModel.
        dispatch_live dispatch_rooted
        batch_live batch_rooted
        late_worker_live : bool)
+      (spawn_latch : SpawnLatchConfig)
       (cron_state : CronState)
       (cron_startup : StartupConfig)
       (work_pool : WorkPoolConfig)
@@ -1152,6 +1203,7 @@ Section EndToEndModel.
       dispatch_live dispatch_rooted
       batch_live batch_rooted
       late_worker_live /\
+    spawn_latch_safe spawn_latch /\
     cron_dispatch_safe cron_state /\
     startup_delivery_safe cron_startup /\
     work_pool_envelope_safe work_pool /\
@@ -1170,6 +1222,7 @@ Section EndToEndModel.
         true
         true
         false
+        complete_spawn_latch
         (cron_final_due
           (cron_worker_complete true
             (cron_second_due (cron_first_due true))))
@@ -1184,14 +1237,16 @@ Section EndToEndModel.
     - split.
       + apply rooted_closed_gc_window_safe.
       + split.
-        * apply complete_cron_dispatch_safe.
+        * apply complete_spawn_latch_safe.
         * split.
-          -- apply complete_startup_delivers_submitted_task.
+          -- apply complete_cron_dispatch_safe.
           -- split.
-             ++ apply complete_work_pool_envelope_safe.
-             ++ unfold active_fanout_envelope_safe.
-                intros _.
-                apply complete_active_fanout_stack_safe.
+             ++ apply complete_startup_delivers_submitted_task.
+             ++ split.
+                ** apply complete_work_pool_envelope_safe.
+                ** unfold active_fanout_envelope_safe.
+                   intros _.
+                   apply complete_active_fanout_stack_safe.
   Qed.
 
   Theorem missing_cron_startup_poll_path_exposes_end_to_end_gap :
@@ -1215,6 +1270,7 @@ Section EndToEndModel.
           batch_live
           batch_rooted
           late_worker_live
+          complete_spawn_latch
           cron_state
           missing_poll_path
           complete_work_pool
@@ -1224,7 +1280,7 @@ Section EndToEndModel.
       batch_live batch_rooted late_worker_live cron_state Hschedule Hgc Hcron
       Hend.
     unfold end_to_end_safe in Hend.
-    destruct Hend as [_ [_ [_ [Hstartup [_ _]]]]].
+    destruct Hend as [_ [_ [_ [_ [Hstartup [_ _]]]]]].
     exact (missing_poll_path_exposes_delivery_gap Hstartup).
   Qed.
 
@@ -1251,6 +1307,7 @@ Section EndToEndModel.
           batch_live
           batch_rooted
           late_worker_live
+          complete_spawn_latch
           (cron_final_due
             (cron_worker_complete false
               (cron_second_due (cron_first_due true))))
@@ -1264,8 +1321,46 @@ Section EndToEndModel.
     unfold end_to_end_safe, cron_dispatch_safe,
       cron_stop_prevents_redispatch in Hend.
     simpl in Hend.
-    destruct Hend as [_ [_ [[_ Hstop] _]]].
+    destruct Hend as [_ [_ [_ [[_ Hstop] _]]]].
     discriminate Hstop.
+  Qed.
+
+  Theorem spawn_before_latch_exposes_end_to_end_gap :
+    forall w wave active_worker_live worker_rooted
+      dispatch_live dispatch_rooted batch_live batch_rooted late_worker_live
+      cron_state cron_startup work_pool active_fanout,
+      schedule_envelope_safe w wave ->
+      gc_window_safe
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live ->
+      cron_dispatch_safe cron_state ->
+      startup_delivery_safe cron_startup ->
+      work_pool_envelope_safe work_pool ->
+      active_fanout_envelope_safe w active_fanout ->
+      ~ end_to_end_safe
+          w
+          wave
+          active_worker_live
+          worker_rooted
+          dispatch_live
+          dispatch_rooted
+          batch_live
+          batch_rooted
+          late_worker_live
+          spawn_before_latch
+          cron_state
+          cron_startup
+          work_pool
+          active_fanout.
+  Proof.
+    intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
+      batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
+      active_fanout Hschedule Hgc Hcron Hstartup Hwork_pool Hactive Hend.
+    unfold end_to_end_safe in Hend.
+    destruct Hend as [_ [_ [Hlatch _]]].
+    exact (spawn_before_latch_exposes_latch_gap Hlatch).
   Qed.
 
   Theorem missing_dispatch_root_exposes_end_to_end_gap :
@@ -1284,6 +1379,7 @@ Section EndToEndModel.
           false
           false
           false
+          complete_spawn_latch
           cron_state
           cron_startup
           work_pool
@@ -1313,6 +1409,7 @@ Section EndToEndModel.
           true
           false
           false
+          complete_spawn_latch
           cron_state
           cron_startup
           work_pool
@@ -1348,6 +1445,7 @@ Section EndToEndModel.
           batch_live
           batch_rooted
           late_worker_live
+          complete_spawn_latch
           cron_state
           cron_startup
           lossy_work_pool_startup
@@ -1357,7 +1455,7 @@ Section EndToEndModel.
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
       Hgc Hcron Hstartup Hend.
     unfold end_to_end_safe in Hend.
-    destruct Hend as [_ [_ [_ [_ [Hwork_pool _]]]]].
+    destruct Hend as [_ [_ [_ [_ [_ [Hwork_pool _]]]]]].
     exact (lossy_work_pool_startup_exposes_envelope_gap Hwork_pool).
   Qed.
 
@@ -1383,6 +1481,7 @@ Section EndToEndModel.
           batch_live
           batch_rooted
           late_worker_live
+          complete_spawn_latch
           cron_state
           cron_startup
           task_panic_missing_inner_work_pool
@@ -1392,7 +1491,7 @@ Section EndToEndModel.
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
       Hgc Hcron Hstartup Hend.
     unfold end_to_end_safe in Hend.
-    destruct Hend as [_ [_ [_ [_ [Hwork_pool _]]]]].
+    destruct Hend as [_ [_ [_ [_ [_ [Hwork_pool _]]]]]].
     exact (missing_inner_task_panic_exposes_envelope_gap Hwork_pool).
   Qed.
 
@@ -1418,6 +1517,7 @@ Section EndToEndModel.
           batch_live
           batch_rooted
           late_worker_live
+          complete_spawn_latch
           cron_state
           cron_startup
           accounting_panic_missing_outer_work_pool
@@ -1427,7 +1527,7 @@ Section EndToEndModel.
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
       Hgc Hcron Hstartup Hend.
     unfold end_to_end_safe in Hend.
-    destruct Hend as [_ [_ [_ [_ [Hwork_pool _]]]]].
+    destruct Hend as [_ [_ [_ [_ [_ [Hwork_pool _]]]]]].
     exact (missing_outer_accounting_panic_exposes_envelope_gap Hwork_pool).
   Qed.
 
@@ -1455,6 +1555,7 @@ Section EndToEndModel.
           batch_live
           batch_rooted
           late_worker_live
+          complete_spawn_latch
           cron_state
           cron_startup
           work_pool
@@ -1464,7 +1565,7 @@ Section EndToEndModel.
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
       active_fanout Hunsafe Hschedule Hgc Hcron Hstartup Hactive Hend.
     unfold end_to_end_safe in Hend.
-    destruct Hend as [_ [_ [_ [_ [Hwork_pool _]]]]].
+    destruct Hend as [_ [_ [_ [_ [_ [Hwork_pool _]]]]]].
     exact (Hunsafe Hwork_pool).
   Qed.
 
@@ -1484,7 +1585,7 @@ Section EndToEndModel.
       ~ end_to_end_safe
           w wave active_worker_live worker_rooted
           dispatch_live dispatch_rooted batch_live batch_rooted
-          late_worker_live cron_state cron_startup
+          late_worker_live complete_spawn_latch cron_state cron_startup
           uncapped_overflow_work_pool active_fanout.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
@@ -1510,7 +1611,7 @@ Section EndToEndModel.
       ~ end_to_end_safe
           w wave active_worker_live worker_rooted
           dispatch_live dispatch_rooted batch_live batch_rooted
-          late_worker_live cron_state cron_startup
+          late_worker_live complete_spawn_latch cron_state cron_startup
           double_unpark_overcounts_work_pool active_fanout.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
@@ -1536,7 +1637,7 @@ Section EndToEndModel.
       ~ end_to_end_safe
           w wave active_worker_live worker_rooted
           dispatch_live dispatch_rooted batch_live batch_rooted
-          late_worker_live cron_state cron_startup
+          late_worker_live complete_spawn_latch cron_state cron_startup
           respawn_without_increment_work_pool active_fanout.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
@@ -1562,7 +1663,7 @@ Section EndToEndModel.
       ~ end_to_end_safe
           w wave active_worker_live worker_rooted
           dispatch_live dispatch_rooted batch_live batch_rooted
-          late_worker_live cron_state cron_startup
+          late_worker_live complete_spawn_latch cron_state cron_startup
           stale_priority_work_pool active_fanout.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
@@ -1597,6 +1698,7 @@ Section EndToEndModel.
           batch_live
           batch_rooted
           late_worker_live
+          complete_spawn_latch
           cron_state
           cron_startup
           work_pool
@@ -1607,7 +1709,7 @@ Section EndToEndModel.
       active_fanout Hdirect Hunsafe Hschedule Hgc Hcron Hstartup Hwork_pool
       Hend.
     unfold end_to_end_safe in Hend.
-    destruct Hend as [_ [_ [_ [_ [_ Hactive]]]]].
+    destruct Hend as [_ [_ [_ [_ [_ [_ Hactive]]]]]].
     destruct (Hactive Hdirect) as [Hgate _].
     exact (Hunsafe Hgate).
   Qed.
@@ -1637,6 +1739,7 @@ Section EndToEndModel.
           batch_live
           batch_rooted
           late_worker_live
+          complete_spawn_latch
           cron_state
           cron_startup
           work_pool
@@ -1647,7 +1750,7 @@ Section EndToEndModel.
       active_fanout Hdirect Hunsafe Hschedule Hgc Hcron Hstartup Hwork_pool
       Hend.
     unfold end_to_end_safe in Hend.
-    destruct Hend as [_ [_ [_ [_ [_ Hactive]]]]].
+    destruct Hend as [_ [_ [_ [_ [_ [_ Hactive]]]]]].
     exact (Hunsafe (Hactive Hdirect)).
   Qed.
 
@@ -1668,7 +1771,7 @@ Section EndToEndModel.
       ~ end_to_end_safe
           w wave active_worker_live worker_rooted
           dispatch_live dispatch_rooted batch_live batch_rooted
-          late_worker_live cron_state cron_startup work_pool
+          late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           zero_cap_bug_active_fanout.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
@@ -1695,7 +1798,7 @@ Section EndToEndModel.
       ~ end_to_end_safe
           w wave active_worker_live worker_rooted
           dispatch_live dispatch_rooted batch_live batch_rooted
-          late_worker_live cron_state cron_startup work_pool
+          late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           underutilized_transducer_active_fanout.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
@@ -1722,7 +1825,7 @@ Section EndToEndModel.
       ~ end_to_end_safe
           w wave active_worker_live worker_rooted
           dispatch_live dispatch_rooted batch_live batch_rooted
-          late_worker_live cron_state cron_startup work_pool
+          late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           non_branch_parallel_active_fanout.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
@@ -1749,7 +1852,7 @@ Section EndToEndModel.
       ~ end_to_end_safe
           w wave active_worker_live worker_rooted
           dispatch_live dispatch_rooted batch_live batch_rooted
-          late_worker_live cron_state cron_startup work_pool
+          late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           missing_dynamic_eval_gate_active_fanout.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
@@ -1776,7 +1879,7 @@ Section EndToEndModel.
       ~ end_to_end_safe
           w wave active_worker_live worker_rooted
           dispatch_live dispatch_rooted batch_live batch_rooted
-          late_worker_live cron_state cron_startup work_pool
+          late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           state_mutation_bypass_active_fanout.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
@@ -1803,7 +1906,7 @@ Section EndToEndModel.
       ~ end_to_end_safe
           w wave active_worker_live worker_rooted
           dispatch_live dispatch_rooted batch_live batch_rooted
-          late_worker_live cron_state cron_startup work_pool
+          late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           strict_io_bypass_active_fanout.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
@@ -1830,7 +1933,7 @@ Section EndToEndModel.
       ~ end_to_end_safe
           w wave active_worker_live worker_rooted
           dispatch_live dispatch_rooted batch_live batch_rooted
-          late_worker_live cron_state cron_startup work_pool
+          late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           missing_purity_active_fanout.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
@@ -1857,7 +1960,7 @@ Section EndToEndModel.
       ~ end_to_end_safe
           w wave active_worker_live worker_rooted
           dispatch_live dispatch_rooted batch_live batch_rooted
-          late_worker_live cron_state cron_startup work_pool
+          late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           missing_budget_active_fanout.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
@@ -1884,7 +1987,7 @@ Section EndToEndModel.
       ~ end_to_end_safe
           w wave active_worker_live worker_rooted
           dispatch_live dispatch_rooted batch_live batch_rooted
-          late_worker_live cron_state cron_startup work_pool
+          late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           partial_dispatch_active_fanout.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted

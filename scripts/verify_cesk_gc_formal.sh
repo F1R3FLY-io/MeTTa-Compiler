@@ -414,6 +414,10 @@ run_tlc "threading_end_to_end_missing_batch_root" "ThreadingEndToEndInterleaving
   fail "Invariant EndToEndSafe is violated"
 run_tlc "threading_end_to_end_open_admission" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_open_admission.cfg" \
   fail "Invariant EndToEndSafe is violated"
+run_tlc "threading_end_to_end_spawn_before_latch" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_spawn_before_latch.cfg" \
+  fail "Invariant WorkerSpawnLatchPrecedesWorker is violated"
+run_tlc "threading_end_to_end_missing_spawn_latch" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_missing_spawn_latch.cfg" \
+  fail "Invariant WorkerSpawnLatchPrecedesWorker is violated"
 run_tlc "threading_end_to_end_unclaimed_cron" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_unclaimed_cron.cfg" \
   fail "Invariant EndToEndSafe is violated"
 run_tlc "threading_end_to_end_cron_no_stop" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_cron_no_stop.cfg" \

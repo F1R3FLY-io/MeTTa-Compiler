@@ -14,12 +14,15 @@ From Stdlib Require Import ZArith.
 Require Import CronRecurringDispatch.
 Require Import CronStartupDelivery.
 Require Import SchedulerActiveFanoutGate.
+Require Import SchedulerDirectFanoutWavefrontRefinement.
 Require Import SchedulerDynamicEvalGate.
+Require Import SchedulerEffectConflictCompleteness.
 Require Import SchedulerFanoutProgress.
 Require Import SchedulerGcBoundary.
 Require Import SchedulerPriorityFairness.
 Require Import SchedulerSpawnLatch.
 Require Import SchedulerTransducerParallelism.
+Require Import SchedulerWavefrontParallelism.
 Require Import WorkPoolLifecycle.
 Require Import WorkPoolOverflowCap.
 Require Import WorkPoolPanicIsolation.
@@ -42,6 +45,13 @@ Open Scope nat_scope.
 
 Module MeTTaTron_GC_ThreadingEndToEndInterleaving.
 
+Module DirectRefinement :=
+  MeTTaTron_GC_SchedulerDirectFanoutWavefrontRefinement.
+Module EffectCompleteness :=
+  MeTTaTron_GC_SchedulerEffectConflictCompleteness.
+Module Wavefront :=
+  MeTTaTron_GC_SchedulerWavefrontParallelism.
+
 Section EndToEndModel.
   Inductive Task : Type :=
   | Producer : Task
@@ -55,7 +65,9 @@ Section EndToEndModel.
 
   Record Workload : Type := {
     has_dependency : bool;
+    dependency_edge_encoded : bool;
     has_effect_conflict : bool;
+    effect_conflict_edge_encoded : bool;
     uses_direct_fanout : bool
   }.
 
@@ -66,6 +78,7 @@ Section EndToEndModel.
       (wave : WaveAssignment)
       : Prop :=
     has_dependency w = true ->
+    dependency_edge_encoded w = true /\
     wave Producer < wave Consumer.
 
   Definition effect_conflict_sound
@@ -73,6 +86,7 @@ Section EndToEndModel.
       (wave : WaveAssignment)
       : Prop :=
     has_effect_conflict w = true ->
+    effect_conflict_edge_encoded w = true /\
     wave Producer <> wave Consumer.
 
   Definition independent_parallelism_maximal
@@ -92,6 +106,91 @@ Section EndToEndModel.
     has_effect_conflict w = false /\
     wave Producer = wave Consumer.
 
+  Definition workload_dependency_edge
+      (w : Workload)
+      (dep task : Task)
+      : Prop :=
+    has_dependency w = true /\
+    dependency_edge_encoded w = true /\
+    dep = Producer /\
+    task = Consumer.
+
+  Definition workload_effect_conflict
+      (w : Workload)
+      (left right : Task)
+      : Prop :=
+    has_effect_conflict w = true /\
+    ((left = Producer /\ right = Consumer) \/
+     (left = Consumer /\ right = Producer)).
+
+  Definition workload_effect_order_edge
+      (w : Workload)
+      (wave : WaveAssignment)
+      (dep task : Task)
+      : Prop :=
+    has_effect_conflict w = true /\
+    effect_conflict_edge_encoded w = true /\
+    ((dep = Producer /\ task = Consumer /\ wave Producer < wave Consumer) \/
+     (dep = Consumer /\ task = Producer /\ wave Consumer < wave Producer)).
+
+  Definition wavefront_dependency_order_safe
+      (w : Workload)
+      (wave : WaveAssignment)
+      : Prop :=
+    @Wavefront.dependencies_before Task wave (workload_dependency_edge w).
+
+  Definition wavefront_same_wave_dependency_independent
+      (w : Workload)
+      (wave : WaveAssignment)
+      : Prop :=
+    @Wavefront.same_wave_independent Task wave (workload_dependency_edge w).
+
+  Definition effect_conflict_order_safe
+      (w : Workload)
+      (wave : WaveAssignment)
+      : Prop :=
+    @EffectCompleteness.dependencies_before
+      Task wave (workload_effect_order_edge w wave).
+
+  Definition effect_conflict_edges_covered
+      (w : Workload)
+      (wave : WaveAssignment)
+      : Prop :=
+    @EffectCompleteness.conflict_edges_covered
+      Task (workload_effect_order_edge w wave) (workload_effect_conflict w).
+
+  Definition same_wave_effect_conflict_free
+      (w : Workload)
+      (wave : WaveAssignment)
+      : Prop :=
+    @EffectCompleteness.same_wave_conflict_free
+      Task wave (workload_effect_conflict w).
+
+  Definition direct_dependency_edges (w : Workload) : nat :=
+    if has_dependency w then 1 else 0.
+
+  Definition direct_fanout_wavefront_refinement_safe
+      (w : Workload)
+      : Prop :=
+    uses_direct_fanout w = true ->
+    DirectRefinement.direct_fanout_refines_independent_wavefront
+      2
+      (direct_dependency_edges w)
+      1
+      2
+      2.
+
+  Definition standalone_scheduler_reordering_safe
+      (w : Workload)
+      (wave : WaveAssignment)
+      : Prop :=
+    wavefront_dependency_order_safe w wave /\
+    wavefront_same_wave_dependency_independent w wave /\
+    effect_conflict_order_safe w wave /\
+    effect_conflict_edges_covered w wave /\
+    same_wave_effect_conflict_free w wave /\
+    direct_fanout_wavefront_refinement_safe w.
+
   Definition schedule_envelope_safe
       (w : Workload)
       (wave : WaveAssignment)
@@ -99,7 +198,158 @@ Section EndToEndModel.
     dependency_order_sound w wave /\
     effect_conflict_sound w wave /\
     independent_parallelism_maximal w wave /\
-    direct_fanout_sound w wave.
+    direct_fanout_sound w wave /\
+    standalone_scheduler_reordering_safe w wave.
+
+  Theorem dependency_order_sound_implies_wavefront_order :
+    forall w wave,
+      dependency_order_sound w wave ->
+      wavefront_dependency_order_safe w wave.
+  Proof.
+    intros w wave Hsound.
+    unfold wavefront_dependency_order_safe, workload_dependency_edge.
+    unfold Wavefront.dependencies_before.
+    intros task dep [Hhas_dependency [_ [Hdep Htask]]].
+    destruct task; destruct dep; try discriminate.
+    subst.
+    specialize (Hsound Hhas_dependency) as [_ Hbefore].
+    exact Hbefore.
+  Qed.
+
+  Theorem dependency_order_sound_implies_same_wave_independent :
+    forall w wave,
+      dependency_order_sound w wave ->
+      wavefront_same_wave_dependency_independent w wave.
+  Proof.
+    intros w wave Hsound.
+    unfold wavefront_same_wave_dependency_independent.
+    apply Wavefront.dependencies_before_implies_same_wave_independent.
+    apply dependency_order_sound_implies_wavefront_order.
+    exact Hsound.
+  Qed.
+
+  Theorem effect_conflict_sound_implies_order_safe :
+    forall w wave,
+      effect_conflict_sound w wave ->
+      effect_conflict_order_safe w wave.
+  Proof.
+    intros w wave Hsound.
+    unfold effect_conflict_order_safe, workload_effect_order_edge.
+    unfold EffectCompleteness.dependencies_before.
+    intros task dep [_ [_ [[Hdep [Htask Hbefore]] |
+                          [Hdep [Htask Hbefore]]]]].
+    - subst.
+      exact Hbefore.
+    - subst.
+      exact Hbefore.
+  Qed.
+
+  Theorem effect_conflict_sound_implies_edges_covered :
+    forall w wave,
+      effect_conflict_sound w wave ->
+      effect_conflict_edges_covered w wave.
+  Proof.
+    intros w wave Hsound.
+    unfold effect_conflict_edges_covered, workload_effect_conflict,
+      workload_effect_order_edge.
+    unfold EffectCompleteness.conflict_edges_covered.
+    intros left right [Hconflict [[Hleft Hright] | [Hleft Hright]]].
+    - subst.
+      specialize (Hsound Hconflict) as [Hencoded Hdistinct].
+      destruct (Nat.lt_ge_cases (wave Producer) (wave Consumer)) as
+        [Hbefore | Hnot_before].
+      + left.
+        split.
+        * exact Hconflict.
+        * split.
+          -- exact Hencoded.
+          -- left.
+             repeat split; try reflexivity; exact Hbefore.
+      + right.
+        split.
+        * exact Hconflict.
+        * split.
+          -- exact Hencoded.
+          -- right.
+             repeat split; try reflexivity; lia.
+    - subst.
+      specialize (Hsound Hconflict) as [Hencoded Hdistinct].
+      destruct (Nat.lt_ge_cases (wave Producer) (wave Consumer)) as
+        [Hbefore | Hnot_before].
+      + right.
+        split.
+        * exact Hconflict.
+        * split.
+          -- exact Hencoded.
+          -- left.
+             repeat split; try reflexivity; exact Hbefore.
+      + left.
+        split.
+        * exact Hconflict.
+        * split.
+          -- exact Hencoded.
+          -- right.
+             repeat split; try reflexivity; lia.
+  Qed.
+
+  Theorem effect_conflict_sound_implies_same_wave_conflict_free :
+    forall w wave,
+      effect_conflict_sound w wave ->
+      same_wave_effect_conflict_free w wave.
+  Proof.
+    intros w wave Hsound.
+    unfold same_wave_effect_conflict_free.
+    apply EffectCompleteness.dependency_order_and_conflict_coverage_imply_same_wave_conflict_free
+      with (depends_on := workload_effect_order_edge w wave).
+    - apply effect_conflict_sound_implies_order_safe.
+      exact Hsound.
+    - apply effect_conflict_sound_implies_edges_covered.
+      exact Hsound.
+  Qed.
+
+  Theorem direct_fanout_sound_implies_wavefront_refinement :
+    forall w wave,
+      direct_fanout_sound w wave ->
+      direct_fanout_wavefront_refinement_safe w.
+  Proof.
+    intros w wave Hsound Hdirect.
+    specialize (Hsound Hdirect) as [Hnodep _].
+    unfold direct_fanout_wavefront_refinement_safe, direct_dependency_edges.
+    rewrite Hnodep.
+    apply DirectRefinement.independent_complete_direct_fanout_refines_single_wave.
+    - lia.
+    - unfold DirectRefinement.direct_fanout_complete.
+      reflexivity.
+  Qed.
+
+  Theorem local_scheduler_contracts_compose_standalone_reordering :
+    forall w wave,
+      dependency_order_sound w wave ->
+      effect_conflict_sound w wave ->
+      direct_fanout_sound w wave ->
+      standalone_scheduler_reordering_safe w wave.
+  Proof.
+    intros w wave Hdep Hconflict Hdirect.
+    unfold standalone_scheduler_reordering_safe.
+    split.
+    - apply dependency_order_sound_implies_wavefront_order.
+      exact Hdep.
+    - split.
+      + apply dependency_order_sound_implies_same_wave_independent.
+        exact Hdep.
+      + split.
+        * apply effect_conflict_sound_implies_order_safe.
+          exact Hconflict.
+        * split.
+          -- apply effect_conflict_sound_implies_edges_covered.
+             exact Hconflict.
+          -- split.
+             ++ apply effect_conflict_sound_implies_same_wave_conflict_free.
+                exact Hconflict.
+             ++ apply direct_fanout_sound_implies_wavefront_refinement
+                  with (wave := wave).
+                exact Hdirect.
+  Qed.
 
   Theorem complete_wave_contract_is_schedule_safe :
     forall w wave,
@@ -117,7 +367,10 @@ Section EndToEndModel.
       + exact Hconflict.
       + split.
         * exact Hmax.
-        * exact Hdirect.
+        * split.
+          -- exact Hdirect.
+          -- apply local_scheduler_contracts_compose_standalone_reordering;
+             assumption.
   Qed.
 
   Theorem same_wave_dependency_exposes_reorder :
@@ -128,7 +381,7 @@ Section EndToEndModel.
   Proof.
     intros w wave Hdep Hsame Hsound.
     unfold dependency_order_sound in Hsound.
-    specialize (Hsound Hdep).
+    specialize (Hsound Hdep) as [_ Hsound].
     lia.
   Qed.
 
@@ -140,8 +393,34 @@ Section EndToEndModel.
   Proof.
     intros w wave Hconflict Hsame Hsound.
     unfold effect_conflict_sound in Hsound.
-    specialize (Hsound Hconflict).
+    specialize (Hsound Hconflict) as [_ Hsound].
     exact (Hsound Hsame).
+  Qed.
+
+  Theorem missing_dependency_edge_exposes_incomplete_reordering :
+    forall w wave,
+      has_dependency w = true ->
+      dependency_edge_encoded w = false ->
+      ~ dependency_order_sound w wave.
+  Proof.
+    intros w wave Hdep Hmissing Hsound.
+    unfold dependency_order_sound in Hsound.
+    specialize (Hsound Hdep) as [Hencoded _].
+    rewrite Hmissing in Hencoded.
+    discriminate Hencoded.
+  Qed.
+
+  Theorem missing_effect_conflict_edge_exposes_incomplete_reordering :
+    forall w wave,
+      has_effect_conflict w = true ->
+      effect_conflict_edge_encoded w = false ->
+      ~ effect_conflict_sound w wave.
+  Proof.
+    intros w wave Hconflict Hmissing Hsound.
+    unfold effect_conflict_sound in Hsound.
+    specialize (Hsound Hconflict) as [Hencoded _].
+    rewrite Hmissing in Hencoded.
+    discriminate Hencoded.
   Qed.
 
   Theorem independent_workload_requires_same_wave_for_maximality :

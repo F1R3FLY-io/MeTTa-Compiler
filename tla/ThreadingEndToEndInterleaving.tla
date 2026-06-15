@@ -314,6 +314,9 @@ EdgeComplete ==
     /\ (HasDependency => DependencyEdgeEncoded)
     /\ (HasEffectConflict => ConflictEdgeEncoded)
 
+SchedulerWavefrontEdgesComplete ==
+    EdgeComplete
+
 ConsumerWave ==
     IF EdgeComplete /\ (HasDependency \/ HasEffectConflict) THEN 1 ELSE 0
 
@@ -993,6 +996,13 @@ ActiveDispatchedCount ==
       ELSE ActiveBranchCount
     ELSE 0
 
+SchedulerDirectFanoutRefinesWavefront ==
+    DirectFanout =>
+      /\ ~HasDependency
+      /\ ~HasEffectConflict
+      /\ ActiveDispatchedCount = ActiveBranchCount
+      /\ wave["producer"] = wave["consumer"]
+
 ActiveFanoutGateComplete ==
     DirectFanout =>
       /\ ActiveBranchCountGate
@@ -1129,6 +1139,8 @@ EndToEndSafe ==
     /\ NoConsumerBeforeProducer
     /\ NoSameWaveEffectConflict
     /\ NoDirectFanoutForDependentWork
+    /\ SchedulerWavefrontEdgesComplete
+    /\ SchedulerDirectFanoutRefinesWavefront
     /\ ActiveFanoutGateComplete
     /\ ActiveTransducerDegreeMatches
     /\ ActiveTransducerMaximalBeforeCap

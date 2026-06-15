@@ -271,8 +271,9 @@ The formal lane covers the main scheduler obligations:
   contract for `collapse` and `collapse-bind`.
 - `ThreadingEndToEndInterleaving.v` and
   `ThreadingEndToEndInterleaving.tla` compose scheduler dependency waves,
-  direct-fanout maximality, active-worker GC roots, closed worker admission, and
-  eval-worker spawn latching into one small interleaving envelope.  The FANOUT
+  effect-conflict edge coverage, direct-fanout independent-wavefront refinement,
+  active-worker GC roots, closed worker admission, and eval-worker spawn
+  latching into one small interleaving envelope.  The FANOUT
   progress obligation composes participant accounting, parked-worker resume, and
   worker completion-drop accounting, so an active parked worker cannot remain
   parked and a parent wait cannot be stranded by a missing worker guard drop.
@@ -293,10 +294,13 @@ The formal lane covers the main scheduler obligations:
   imports the `SchedulerGcBoundary.v` theorem and exposes the same
   `SchedulerBoundaryComplete` invariant in the E2E TLC model, so active workers,
   live-dispatch fanout, async batch handoff, and closed admission are checked as
-  one GC-facing scheduler boundary.  Its active direct-fanout
-  obligation requires branch threshold, WFST degree, purity/dynamic-eval, depth,
-  pool, budget, and complete-dispatch gates before `DirectFanout` can contribute
-  to maximal same-wave parallelism.
+  one GC-facing scheduler boundary.  Its schedule obligation imports the
+  standalone wavefront/effect/direct-refinement theorems, and the E2E TLC model
+  exposes `SchedulerWavefrontEdgesComplete` plus
+  `SchedulerDirectFanoutRefinesWavefront`.  Its active direct-fanout obligation
+  requires branch threshold, WFST degree, purity/dynamic-eval, depth, pool,
+  budget, and complete-dispatch gates before `DirectFanout` can contribute to
+  maximal same-wave parallelism.
 
 These proofs are mandatory in `scripts/verify_cesk_gc_formal.sh`.
 
@@ -582,6 +586,7 @@ The composed end-to-end envelope is modeled by:
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_state_mutation_bypass.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_strict_io_bypass.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_missing_dependency.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_missing_conflict_edge.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_missing_worker_root.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_missing_dispatch_root.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_missing_batch_root.cfg`
@@ -603,10 +608,13 @@ The composed end-to-end envelope is modeled by:
 - `tla/MC_ThreadingEndToEndInterleaving_work_pool_stale_priority.cfg`
 
 The positive dependency-bearing and independent configs preserve
-`EndToEndSafe`, and the safe config also preserves
-`SchedulerBoundaryComplete` inside the composed model. The negative configs
-violate `EndToEndSafe` when dependency edges are
-omitted, active direct fanout skips purity/budget/complete-dispatch gates,
+`EndToEndSafe`; the safe config also preserves `SchedulerBoundaryComplete`,
+`SchedulerWavefrontEdgesComplete`, and
+`SchedulerDirectFanoutRefinesWavefront` inside the composed model. The missing
+dependency and missing effect-conflict edge configs violate
+`SchedulerWavefrontEdgesComplete`. The partial direct-dispatch config violates
+`SchedulerDirectFanoutRefinesWavefront`. Other negative configs violate
+`EndToEndSafe` when active direct fanout skips purity/budget/complete-dispatch gates,
 active direct fanout bypasses the WFST transducer's nonzero degree,
 maximal-before-cap, or branch-parallel class gates, dynamic eval bypasses the
 dynamic-eval blocker, state mutation is allowed through the pure no-budget

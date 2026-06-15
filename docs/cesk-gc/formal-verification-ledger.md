@@ -1227,15 +1227,19 @@ facts the proofs rely on:
 
 - Threading end-to-end interleaving envelope (`formal/rocq/gc/ThreadingEndToEndInterleaving.v`,
   `tla/ThreadingEndToEndInterleaving.tla`, 2026-06-14) — composes scheduler
-  dependency waves, direct fanout, active-worker root publication, closed worker
-  admission, eval-worker spawn latching, active direct-fanout gates, sweep,
-  recurring-cron dispatch, cron startup delivery, WorkPool startup drain,
-  WorkPool panic isolation, and the GC-facing scheduler boundary for active
-  workers, live-dispatch fanout, async batch roots, and closed admission into
-  one TLC state machine. It now composes both `SchedulerFanoutProgress.v` and
-  `SchedulerGcBoundary.v`: FANOUT participant accounting, parked-worker resume,
-  worker completion-drop accounting, and the GC-facing scheduler root/admission
-  boundary are part of the same end-to-end proof boundary.
+  dependency waves, effect-conflict edge coverage, direct fanout, active-worker
+  root publication, closed worker admission, eval-worker spawn latching, active
+  direct-fanout gates, sweep, recurring-cron dispatch, cron startup delivery,
+  WorkPool startup drain, WorkPool panic isolation, and the GC-facing scheduler
+  boundary for active workers, live-dispatch fanout, async batch roots, and
+  closed admission into one TLC state machine. It now composes
+  `SchedulerWavefrontParallelism.v`, `SchedulerEffectConflictCompleteness.v`,
+  `SchedulerDirectFanoutWavefrontRefinement.v`, `SchedulerFanoutProgress.v`,
+  and `SchedulerGcBoundary.v`: wavefront edge coverage, direct-fanout
+  independent-wavefront refinement, FANOUT participant accounting,
+  parked-worker resume, worker completion-drop accounting, and the GC-facing
+  scheduler root/admission boundary are part of the same end-to-end proof
+  boundary.
   Positive dependency-bearing and independent configs preserve `EndToEndSafe`.
   Negative discriminators violate it for missing dependency edges, active
   direct-fanout without purity or budget gates, partial direct-fanout dispatch,
@@ -1247,7 +1251,12 @@ facts the proofs rely on:
   participant contribution, missing parked FANOUT worker resume, missing worker
   completion-drop accounting, unclaimed recurring cron dispatch, and a pooled recurring
   worker that clears `in_flight` without first publishing the terminal stop
-  state. The missing active-worker-root, dispatch-root, batch-root, and
+  state. The missing dependency-edge and effect-conflict-edge E2E
+  discriminators now fail specifically on `SchedulerWavefrontEdgesComplete`,
+  and the partial direct-dispatch discriminator fails on
+  `SchedulerDirectFanoutRefinesWavefront`, matching the standalone scheduler
+  wavefront/effect/direct-refinement proofs inside the composed model. The
+  missing active-worker-root, dispatch-root, batch-root, and
   open-admission E2E discriminators now fail specifically on
   `SchedulerBoundaryComplete`, matching the standalone scheduler/GC boundary
   model inside the composed interleaving envelope. The composed cron startup discriminator separately rejects a submitted

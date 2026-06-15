@@ -27,6 +27,17 @@ CONSTANTS
     E1GenerationAdvanced,
     E1RequestCleared,
     E1WorkersResumed,
+    E1SatbSuccess,
+    E1SatbPanic,
+    E1FinalSweepClosed,
+    E1SatbAbort,
+    E1StwRequested,
+    E1StwRan,
+    E1InitialCycleClosed,
+    E1FinalCycleClosed,
+    E1StwCycleClosed,
+    E1WitnessCleared,
+    E1GcInProgressReleased,
     IncludeWorkerRoot,
     IncludeDispatchRoot,
     IncludeBatchRoot,
@@ -220,6 +231,17 @@ BooleanConstantsOK ==
     /\ E1GenerationAdvanced \in BOOLEAN
     /\ E1RequestCleared \in BOOLEAN
     /\ E1WorkersResumed \in BOOLEAN
+    /\ E1SatbSuccess \in BOOLEAN
+    /\ E1SatbPanic \in BOOLEAN
+    /\ E1FinalSweepClosed \in BOOLEAN
+    /\ E1SatbAbort \in BOOLEAN
+    /\ E1StwRequested \in BOOLEAN
+    /\ E1StwRan \in BOOLEAN
+    /\ E1InitialCycleClosed \in BOOLEAN
+    /\ E1FinalCycleClosed \in BOOLEAN
+    /\ E1StwCycleClosed \in BOOLEAN
+    /\ E1WitnessCleared \in BOOLEAN
+    /\ E1GcInProgressReleased \in BOOLEAN
     /\ IncludeWorkerRoot \in BOOLEAN
     /\ IncludeDispatchRoot \in BOOLEAN
     /\ IncludeBatchRoot \in BOOLEAN
@@ -390,6 +412,40 @@ E1DefaultFlipSafe ==
     /\ E1FailedTriggerBackstopped
     /\ E1PostedDriverClosesCycle
     /\ E1ClosedCycleReleasesWorkers
+
+E1DriverChoosesSatbOrAbort ==
+    E1DriverPosted => E1SatbSuccess \/ E1SatbAbort
+
+E1SatbSuccessClosesCycles ==
+    E1SatbSuccess => E1InitialCycleClosed /\ E1FinalCycleClosed
+
+E1PanicOrClosedFinalSweepAborts ==
+    (E1SatbPanic \/ E1FinalSweepClosed) => E1SatbAbort
+
+E1SatbAbortPostsFreshStw ==
+    E1SatbAbort => E1StwRequested
+
+E1StwBackstopCloses ==
+    E1StwRequested => E1StwRan /\ E1StwCycleClosed
+
+E1FinalCycleRelease ==
+    E1FinalCycleClosed =>
+      E1GenerationAdvanced /\ E1RequestCleared /\ E1WorkersResumed /\
+      E1WitnessCleared /\ E1GcInProgressReleased
+
+E1StwCycleRelease ==
+    E1StwCycleClosed =>
+      E1GenerationAdvanced /\ E1RequestCleared /\ E1WorkersResumed /\
+      E1WitnessCleared /\ E1GcInProgressReleased
+
+E1SatbStwDriverSafe ==
+    /\ E1DriverChoosesSatbOrAbort
+    /\ E1SatbSuccessClosesCycles
+    /\ E1PanicOrClosedFinalSweepAborts
+    /\ E1SatbAbortPostsFreshStw
+    /\ E1StwBackstopCloses
+    /\ E1FinalCycleRelease
+    /\ E1StwCycleRelease
 
 ConsumerWave ==
     IF EdgeComplete /\ (HasDependency \/ HasEffectConflict) THEN 1 ELSE 0
@@ -1237,6 +1293,7 @@ EndToEndSafe ==
     /\ NoDirectFanoutForDependentWork
     /\ SchedulerClassificationRangesDisjoint
     /\ E1DefaultFlipSafe
+    /\ E1SatbStwDriverSafe
     /\ SchedulerWavefrontEdgesComplete
     /\ SchedulerDirectFanoutRefinesWavefront
     /\ ActiveFanoutGateComplete

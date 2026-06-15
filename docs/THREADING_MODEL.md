@@ -308,7 +308,11 @@ The formal lane covers the main scheduler obligations:
   index mode must imply the dedicated collector regime, legacy default/session/
   parallel/cron request producers must be suppressed there, and FANOUT trigger
   failure must clear the request and resume workers instead of leaving a
-  driverless pending cycle.
+  driverless pending cycle. It also imports `E1SatbStwDriverProgress.v`, so a
+  posted default driver request must either finish the SATB initial/final
+  rendezvous path and release the driver state, or classify panic/final-sweep
+  closure as an abort that posts a fresh STW rendezvous backstop before workers
+  resume.
 
 These proofs are mandatory in `scripts/verify_cesk_gc_formal.sh`.
 
@@ -589,6 +593,8 @@ The composed end-to-end envelope is modeled by:
 - `tla/MC_ThreadingEndToEndInterleaving_classification_no_shift.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_e1_legacy_default_ungated.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_e1_trigger_missing_backstop.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_e1_satb_success_missing_release.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_e1_satb_abort_missing_stw.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_missing_purity.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_missing_budget.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_partial_dispatch.cfg`
@@ -626,12 +632,16 @@ The positive dependency-bearing and independent configs preserve
 `EndToEndSafe`; the safe config also preserves `SchedulerBoundaryComplete`,
 `SchedulerClassificationRangesDisjoint`, `SchedulerWavefrontEdgesComplete`,
 `SchedulerDirectFanoutRefinesWavefront`, `ActiveFanoutAdmissionComplete`,
-`CollapseFanoutAdmissionComplete`, and `E1DefaultFlipSafe` inside the composed
-model. The no-shift classification config violates
+`CollapseFanoutAdmissionComplete`, `E1DefaultFlipSafe`, and
+`E1SatbStwDriverSafe` inside the composed model. The no-shift classification
+config violates
 `SchedulerClassificationRangesDisjoint`. The E1 legacy-default and
 trigger-backstop configs violate `E1LegacyProducersSuppressed` and
 `E1FailedTriggerBackstopped`, matching the dedicated-regime and FANOUT
-rendezvous-trigger submodels. The missing dependency and missing effect-conflict
+rendezvous-trigger submodels. The E1 SATB/STW configs violate
+`E1FinalCycleRelease` when the SATB success path fails to clear driver state,
+and `E1SatbAbortPostsFreshStw` when an abort does not request the fresh STW
+backstop. The missing dependency and missing effect-conflict
 edge configs violate
 `SchedulerWavefrontEdgesComplete`. The partial direct-dispatch config violates
 `SchedulerDirectFanoutRefinesWavefront`. The degree-as-spawn-cap and

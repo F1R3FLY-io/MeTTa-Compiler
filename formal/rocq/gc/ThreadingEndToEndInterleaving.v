@@ -16,6 +16,7 @@ Require Import CronStartupDelivery.
 Require Import CESKCollectorSafety.
 Require Import CollapseFanoutAdmissionCompleteness.
 Require Import E1DefaultConcurrentFlip.
+Require Import E1SatbStwDriverProgress.
 Require Import SchedulerActiveFanoutGate.
 Require Import SchedulerClassificationLookup.
 Require Import SchedulerDirectFanoutWavefrontRefinement.
@@ -64,6 +65,8 @@ Module Collector :=
   MeTTaTron_GC_CESKCollectorSafety.
 Module E1Default :=
   MeTTaTron_GC_E1DefaultConcurrentFlip.
+Module E1Driver :=
+  MeTTaTron_GC_E1SatbStwDriverProgress.
 Module Wavefront :=
   MeTTaTron_GC_SchedulerWavefrontParallelism.
 
@@ -384,6 +387,237 @@ Section EndToEndModel.
     simpl in Hfailed.
     destruct (Hfailed eq_refl) as [Hcleared _].
     discriminate Hcleared.
+  Qed.
+
+  Record E1SatbStwDriverConfig : Type := {
+    e1_satb_driver_posted : Prop;
+    e1_satb_success : Prop;
+    e1_satb_panic : Prop;
+    e1_final_sweep_closed : Prop;
+    e1_satb_abort : Prop;
+    e1_stw_requested : Prop;
+    e1_stw_ran : Prop;
+    e1_initial_cycle_closed : Prop;
+    e1_final_cycle_closed : Prop;
+    e1_stw_cycle_closed : Prop;
+    e1_driver_generation_advanced : Prop;
+    e1_driver_request_cleared : Prop;
+    e1_driver_workers_resumed : Prop;
+    e1_driver_witness_cleared : Prop;
+    e1_driver_gc_in_progress_released : Prop
+  }.
+
+  Definition e1_satb_cycle_release
+      (c : E1SatbStwDriverConfig)
+      (closed : Prop)
+      : Prop :=
+    closed ->
+    e1_driver_generation_advanced c /\
+    e1_driver_request_cleared c /\
+    e1_driver_workers_resumed c /\
+    e1_driver_witness_cleared c /\
+    e1_driver_gc_in_progress_released c.
+
+  Definition e1_satb_driver_released
+      (c : E1SatbStwDriverConfig)
+      : Prop :=
+    e1_driver_generation_advanced c /\
+    e1_driver_request_cleared c /\
+    e1_driver_workers_resumed c /\
+    e1_driver_witness_cleared c /\
+    e1_driver_gc_in_progress_released c.
+
+  Definition e1_satb_abort_detected
+      (c : E1SatbStwDriverConfig)
+      : Prop :=
+    e1_satb_panic c \/ e1_final_sweep_closed c.
+
+  Definition e1_satb_driver_case_total
+      (c : E1SatbStwDriverConfig)
+      : Prop :=
+    e1_satb_driver_posted c ->
+    e1_satb_success c \/ e1_satb_abort c.
+
+  Definition e1_satb_success_closes_cycles
+      (c : E1SatbStwDriverConfig)
+      : Prop :=
+    e1_satb_success c ->
+    e1_initial_cycle_closed c /\ e1_final_cycle_closed c.
+
+  Definition e1_satb_panic_or_closed_final_sweep_aborts
+      (c : E1SatbStwDriverConfig)
+      : Prop :=
+    (e1_satb_panic c -> e1_satb_abort c) /\
+    (e1_final_sweep_closed c -> e1_satb_abort c).
+
+  Definition e1_satb_abort_posts_fresh_stw
+      (c : E1SatbStwDriverConfig)
+      : Prop :=
+    e1_satb_abort c -> e1_stw_requested c.
+
+  Definition e1_stw_backstop_closes
+      (c : E1SatbStwDriverConfig)
+      : Prop :=
+    e1_stw_requested c -> e1_stw_ran c /\ e1_stw_cycle_closed c.
+
+  Definition e1_satb_stw_driver_safe
+      (c : E1SatbStwDriverConfig)
+      : Prop :=
+    e1_satb_driver_case_total c /\
+    e1_satb_success_closes_cycles c /\
+    e1_satb_panic_or_closed_final_sweep_aborts c /\
+    e1_satb_cycle_release c (e1_final_cycle_closed c) /\
+    e1_satb_abort_posts_fresh_stw c /\
+    e1_stw_backstop_closes c /\
+    e1_satb_cycle_release c (e1_stw_cycle_closed c).
+
+  Definition complete_e1_satb_stw_driver : E1SatbStwDriverConfig :=
+    {| e1_satb_driver_posted := True;
+       e1_satb_success := True;
+       e1_satb_panic := False;
+       e1_final_sweep_closed := False;
+       e1_satb_abort := False;
+       e1_stw_requested := False;
+       e1_stw_ran := False;
+       e1_initial_cycle_closed := True;
+       e1_final_cycle_closed := True;
+       e1_stw_cycle_closed := False;
+       e1_driver_generation_advanced := True;
+       e1_driver_request_cleared := True;
+       e1_driver_workers_resumed := True;
+       e1_driver_witness_cleared := True;
+       e1_driver_gc_in_progress_released := True |}.
+
+  Definition missing_e1_satb_success_release_driver
+      : E1SatbStwDriverConfig :=
+    {| e1_satb_driver_posted := True;
+       e1_satb_success := True;
+       e1_satb_panic := False;
+       e1_final_sweep_closed := False;
+       e1_satb_abort := False;
+       e1_stw_requested := False;
+       e1_stw_ran := False;
+       e1_initial_cycle_closed := True;
+       e1_final_cycle_closed := True;
+       e1_stw_cycle_closed := False;
+       e1_driver_generation_advanced := True;
+       e1_driver_request_cleared := True;
+       e1_driver_workers_resumed := True;
+       e1_driver_witness_cleared := False;
+       e1_driver_gc_in_progress_released := True |}.
+
+  Definition missing_e1_satb_abort_stw_backstop_driver
+      : E1SatbStwDriverConfig :=
+    {| e1_satb_driver_posted := True;
+       e1_satb_success := False;
+       e1_satb_panic := True;
+       e1_final_sweep_closed := False;
+       e1_satb_abort := True;
+       e1_stw_requested := False;
+       e1_stw_ran := False;
+       e1_initial_cycle_closed := False;
+       e1_final_cycle_closed := False;
+       e1_stw_cycle_closed := False;
+       e1_driver_generation_advanced := True;
+       e1_driver_request_cleared := True;
+       e1_driver_workers_resumed := True;
+       e1_driver_witness_cleared := True;
+       e1_driver_gc_in_progress_released := True |}.
+
+  Theorem complete_e1_satb_stw_driver_safe :
+    e1_satb_stw_driver_safe complete_e1_satb_stw_driver.
+  Proof.
+    unfold e1_satb_stw_driver_safe, e1_satb_driver_case_total,
+      e1_satb_success_closes_cycles,
+      e1_satb_panic_or_closed_final_sweep_aborts,
+      e1_satb_cycle_release, e1_satb_abort_posts_fresh_stw,
+      e1_stw_backstop_closes, complete_e1_satb_stw_driver.
+    simpl.
+    repeat split; intros; try contradiction; try (left; exact I);
+      repeat split; exact I.
+  Qed.
+
+  Theorem e1_satb_stw_driver_safe_implies_released :
+    forall c,
+      e1_satb_stw_driver_safe c ->
+      e1_satb_driver_posted c ->
+      e1_satb_driver_released c.
+  Proof.
+    intros c Hsafe Hposted.
+    unfold e1_satb_stw_driver_safe in Hsafe.
+    destruct Hsafe as
+      [Hcase [Hsuccess [_ [Hfinal_release
+        [Habort_posts [Hbackstop Hstw_release]]]]]].
+    unfold e1_satb_driver_released.
+    eapply E1Driver.posted_driver_satb_or_stw_releases.
+    - exact Hcase.
+    - exact Hsuccess.
+    - exact Hfinal_release.
+    - exact Habort_posts.
+    - exact Hbackstop.
+    - exact Hstw_release.
+    - exact Hposted.
+  Qed.
+
+  Theorem e1_satb_stw_driver_safe_clears_sticky_request_and_witness :
+    forall c,
+      e1_satb_stw_driver_safe c ->
+      e1_satb_driver_posted c ->
+      e1_driver_request_cleared c /\
+      e1_driver_workers_resumed c /\
+      e1_driver_witness_cleared c /\
+      e1_driver_gc_in_progress_released c.
+  Proof.
+    intros c Hsafe Hposted.
+    unfold e1_satb_stw_driver_safe in Hsafe.
+    destruct Hsafe as
+      [Hcase [Hsuccess [_ [Hfinal_release
+        [Habort_posts [Hbackstop Hstw_release]]]]]].
+    eapply E1Driver.posted_driver_no_sticky_request_or_witness.
+    - exact Hcase.
+    - exact Hsuccess.
+    - exact Hfinal_release.
+    - exact Habort_posts.
+    - exact Hbackstop.
+    - exact Hstw_release.
+    - exact Hposted.
+  Qed.
+
+  Theorem panic_or_closed_final_sweep_exposes_driver_abort :
+    forall c,
+      e1_satb_stw_driver_safe c ->
+      e1_satb_abort_detected c ->
+      e1_satb_abort c.
+  Proof.
+    intros c Hsafe Habort_detected.
+    unfold e1_satb_stw_driver_safe in Hsafe.
+    destruct Hsafe as [_ [_ [Haborts _]]].
+    destruct Haborts as [Hpanic Hclosed].
+    eapply E1Driver.panic_or_closed_final_sweep_is_satb_abort.
+    - exact Hpanic.
+    - exact Hclosed.
+    - exact Habort_detected.
+  Qed.
+
+  Theorem missing_e1_satb_success_release_exposes_driver_gap :
+    ~ e1_satb_stw_driver_safe missing_e1_satb_success_release_driver.
+  Proof.
+    intros [_ [_ [_ [Hfinal_release _]]]].
+    unfold e1_satb_cycle_release,
+      missing_e1_satb_success_release_driver in Hfinal_release.
+    simpl in Hfinal_release.
+    destruct (Hfinal_release I) as [_ [_ [_ [Hwitness _]]]].
+    exact Hwitness.
+  Qed.
+
+  Theorem missing_e1_satb_abort_stw_backstop_exposes_driver_gap :
+    ~ e1_satb_stw_driver_safe missing_e1_satb_abort_stw_backstop_driver.
+  Proof.
+    intros [_ [_ [_ [_ [Habort_posts _]]]]].
+    unfold e1_satb_abort_posts_fresh_stw,
+      missing_e1_satb_abort_stw_backstop_driver in Habort_posts.
+    simpl in Habort_posts.
+    exact (Habort_posts I).
   Qed.
 
   Definition WaveAssignment : Type := Task -> nat.
@@ -2504,6 +2738,7 @@ Section EndToEndModel.
       (fanout_progress : FanoutProgressConfig)
       (classification_lookup : ClassificationLookupConfig)
       (e1_default_flip : E1DefaultFlipConfig)
+      (e1_satb_stw_driver : E1SatbStwDriverConfig)
       : Prop :=
     schedule_envelope_safe w wave /\
     gc_window_safe
@@ -2523,7 +2758,8 @@ Section EndToEndModel.
       batch_live batch_rooted
       late_worker_live /\
     classification_lookup_safe classification_lookup /\
-    e1_default_flip_safe e1_default_flip.
+    e1_default_flip_safe e1_default_flip /\
+    e1_satb_stw_driver_safe e1_satb_stw_driver.
 
   Theorem end_to_end_safe_implies_gc_window_safe :
     forall w wave
@@ -2532,7 +2768,8 @@ Section EndToEndModel.
       batch_live batch_rooted
       late_worker_live
       spawn_latch cron_state cron_startup work_pool active_fanout
-      fanout_progress classification_lookup e1_default_flip,
+      fanout_progress classification_lookup e1_default_flip
+      e1_satb_stw_driver,
       end_to_end_safe
         w wave
         active_worker_live worker_rooted
@@ -2540,7 +2777,8 @@ Section EndToEndModel.
         batch_live batch_rooted
         late_worker_live
         spawn_latch cron_state cron_startup work_pool active_fanout
-        fanout_progress classification_lookup e1_default_flip ->
+        fanout_progress classification_lookup e1_default_flip
+        e1_satb_stw_driver ->
       gc_window_safe
         active_worker_live worker_rooted
         dispatch_live dispatch_rooted
@@ -2550,7 +2788,7 @@ Section EndToEndModel.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live spawn_latch cron_state
       cron_startup work_pool active_fanout fanout_progress
-      classification_lookup e1_default_flip Hend.
+      classification_lookup e1_default_flip e1_satb_stw_driver Hend.
     unfold end_to_end_safe in Hend.
     exact (proj1 (proj2 Hend)).
   Qed.
@@ -2563,6 +2801,7 @@ Section EndToEndModel.
       late_worker_live
       spawn_latch cron_state cron_startup work_pool active_fanout
       fanout_progress classification_lookup e1_default_flip
+      e1_satb_stw_driver
       (StructuralRoot WorkerRoot SafepointRoot EnvAnchor DispatchAnchor
        InitialRoot ShadedDeletion AllocateBlack PublishedAlloc SegmentWritten
        SegmentPublished SlotWritten SlotPublished AddrReturned ReadObserved
@@ -2577,7 +2816,8 @@ Section EndToEndModel.
         batch_live batch_rooted
         late_worker_live
         spawn_latch cron_state cron_startup work_pool active_fanout
-        fanout_progress classification_lookup e1_default_flip ->
+        fanout_progress classification_lookup e1_default_flip
+        e1_satb_stw_driver ->
       (forall a,
           FutureTouch a ->
           @Collector.Reach BoundaryAddr
@@ -2647,7 +2887,8 @@ Section EndToEndModel.
     intros w wave active_worker_live worker_rooted dispatch_live
       dispatch_rooted batch_live batch_rooted late_worker_live spawn_latch
       cron_state cron_startup work_pool active_fanout fanout_progress
-      classification_lookup e1_default_flip StructuralRoot WorkerRoot
+      classification_lookup e1_default_flip e1_satb_stw_driver
+      StructuralRoot WorkerRoot
       SafepointRoot EnvAnchor DispatchAnchor InitialRoot ShadedDeletion
       AllocateBlack PublishedAlloc SegmentWritten SegmentPublished SlotWritten
       SlotPublished AddrReturned ReadObserved ConcurrentReturned ReuseReturned
@@ -2664,7 +2905,8 @@ Section EndToEndModel.
         batch_live batch_rooted
         late_worker_live
         spawn_latch cron_state cron_startup work_pool active_fanout
-        fanout_progress classification_lookup e1_default_flip Hend)
+        fanout_progress classification_lookup e1_default_flip
+        e1_satb_stw_driver Hend)
       as Hgc_window.
     destruct
       (gc_window_safe_exports_boundary_driver_roots
@@ -2699,7 +2941,8 @@ Section EndToEndModel.
         complete_active_fanout
         complete_fanout_progress
         complete_classification_lookup
-        complete_e1_default_flip.
+        complete_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave active_worker_live Hschedule.
     unfold end_to_end_safe.
@@ -2725,7 +2968,9 @@ Section EndToEndModel.
                            { apply rooted_closed_scheduler_boundary_safe. }
                            { split.
                              - apply complete_classification_lookup_safe.
-                             - apply complete_e1_default_flip_safe. }
+                             - split.
+                               + apply complete_e1_default_flip_safe.
+                               + apply complete_e1_satb_stw_driver_safe. }
   Qed.
 
   Theorem no_shift_classification_lookup_exposes_end_to_end_gap :
@@ -2750,7 +2995,8 @@ Section EndToEndModel.
           complete_active_fanout
           complete_fanout_progress
           no_shift_classification_lookup
-          complete_e1_default_flip.
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -2781,12 +3027,13 @@ Section EndToEndModel.
           complete_active_fanout
           complete_fanout_progress
           complete_classification_lookup
-          legacy_default_ungated_e1_default_flip.
+          legacy_default_ungated_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
-    destruct Hend as [_ [_ [_ [_ [_ [_ [_ [_ [_ [_ He1]]]]]]]]]].
-    exact (legacy_default_ungated_exposes_e1_default_flip_gap He1).
+    apply legacy_default_ungated_exposes_e1_default_flip_gap.
+    tauto.
   Qed.
 
   Theorem trigger_failure_missing_backstop_exposes_end_to_end_gap :
@@ -2811,12 +3058,75 @@ Section EndToEndModel.
           complete_active_fanout
           complete_fanout_progress
           complete_classification_lookup
-          trigger_failure_missing_backstop_e1_default_flip.
+          trigger_failure_missing_backstop_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
-    destruct Hend as [_ [_ [_ [_ [_ [_ [_ [_ [_ [_ He1]]]]]]]]]].
-    exact (trigger_failure_missing_backstop_exposes_e1_default_flip_gap He1).
+    apply trigger_failure_missing_backstop_exposes_e1_default_flip_gap.
+    tauto.
+  Qed.
+
+  Theorem missing_e1_satb_success_release_exposes_end_to_end_gap :
+    forall w wave active_worker_live,
+      schedule_envelope_safe w wave ->
+      ~ end_to_end_safe
+          w
+          wave
+          active_worker_live
+          active_worker_live
+          true
+          true
+          true
+          true
+          false
+          complete_spawn_latch
+          (cron_final_due
+            (cron_worker_complete true
+              (cron_second_due (cron_first_due true))))
+          complete_startup
+          complete_work_pool
+          complete_active_fanout
+          complete_fanout_progress
+          complete_classification_lookup
+          complete_e1_default_flip
+          missing_e1_satb_success_release_driver.
+  Proof.
+    intros w wave active_worker_live Hschedule Hend.
+    unfold end_to_end_safe in Hend.
+    apply missing_e1_satb_success_release_exposes_driver_gap.
+    tauto.
+  Qed.
+
+  Theorem missing_e1_satb_abort_stw_backstop_exposes_end_to_end_gap :
+    forall w wave active_worker_live,
+      schedule_envelope_safe w wave ->
+      ~ end_to_end_safe
+          w
+          wave
+          active_worker_live
+          active_worker_live
+          true
+          true
+          true
+          true
+          false
+          complete_spawn_latch
+          (cron_final_due
+            (cron_worker_complete true
+              (cron_second_due (cron_first_due true))))
+          complete_startup
+          complete_work_pool
+          complete_active_fanout
+          complete_fanout_progress
+          complete_classification_lookup
+          complete_e1_default_flip
+          missing_e1_satb_abort_stw_backstop_driver.
+  Proof.
+    intros w wave active_worker_live Hschedule Hend.
+    unfold end_to_end_safe in Hend.
+    apply missing_e1_satb_abort_stw_backstop_exposes_driver_gap.
+    tauto.
   Qed.
 
   Theorem missing_cron_startup_poll_path_exposes_end_to_end_gap :
@@ -2847,7 +3157,8 @@ Section EndToEndModel.
           complete_active_fanout
           complete_fanout_progress
           complete_classification_lookup
-          complete_e1_default_flip.
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state Hschedule Hgc Hcron
@@ -2889,7 +3200,8 @@ Section EndToEndModel.
           active_fanout
           complete_fanout_progress
           complete_classification_lookup
-          complete_e1_default_flip.
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_startup work_pool
@@ -2932,7 +3244,8 @@ Section EndToEndModel.
           active_fanout
           complete_fanout_progress
           complete_classification_lookup
-          complete_e1_default_flip.
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -2965,7 +3278,8 @@ Section EndToEndModel.
           complete_active_fanout
           complete_fanout_progress
           complete_classification_lookup
-          complete_e1_default_flip.
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave cron_state cron_startup work_pool Hschedule Hcron Hstartup
       Hwork_pool Hend.
@@ -2998,7 +3312,8 @@ Section EndToEndModel.
           complete_active_fanout
           complete_fanout_progress
           complete_classification_lookup
-          complete_e1_default_flip.
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave cron_state cron_startup work_pool Hschedule Hcron Hstartup
       Hwork_pool Hend.
@@ -3037,7 +3352,8 @@ Section EndToEndModel.
           complete_active_fanout
           complete_fanout_progress
           complete_classification_lookup
-          complete_e1_default_flip.
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
@@ -3076,7 +3392,8 @@ Section EndToEndModel.
           complete_active_fanout
           complete_fanout_progress
           complete_classification_lookup
-          complete_e1_default_flip.
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
@@ -3115,7 +3432,8 @@ Section EndToEndModel.
           complete_active_fanout
           complete_fanout_progress
           complete_classification_lookup
-          complete_e1_default_flip.
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
@@ -3156,7 +3474,8 @@ Section EndToEndModel.
           active_fanout
           complete_fanout_progress
           complete_classification_lookup
-          complete_e1_default_flip.
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3186,7 +3505,8 @@ Section EndToEndModel.
           uncapped_overflow_work_pool active_fanout
           complete_fanout_progress
           complete_classification_lookup
-          complete_e1_default_flip.
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -3215,7 +3535,8 @@ Section EndToEndModel.
           double_unpark_overcounts_work_pool active_fanout
           complete_fanout_progress
           complete_classification_lookup
-          complete_e1_default_flip.
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -3244,7 +3565,8 @@ Section EndToEndModel.
           respawn_without_increment_work_pool active_fanout
           complete_fanout_progress
           complete_classification_lookup
-          complete_e1_default_flip.
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -3273,7 +3595,8 @@ Section EndToEndModel.
           stale_priority_work_pool active_fanout
           complete_fanout_progress
           complete_classification_lookup
-          complete_e1_default_flip.
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -3314,7 +3637,8 @@ Section EndToEndModel.
           active_fanout
           complete_fanout_progress
           complete_classification_lookup
-          complete_e1_default_flip.
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3358,7 +3682,8 @@ Section EndToEndModel.
           active_fanout
           complete_fanout_progress
           complete_classification_lookup
-          complete_e1_default_flip.
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3390,7 +3715,8 @@ Section EndToEndModel.
           zero_cap_bug_active_fanout
           complete_fanout_progress
           complete_classification_lookup
-          complete_e1_default_flip.
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3420,7 +3746,8 @@ Section EndToEndModel.
           underutilized_transducer_active_fanout
           complete_fanout_progress
           complete_classification_lookup
-          complete_e1_default_flip.
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3450,7 +3777,8 @@ Section EndToEndModel.
           non_branch_parallel_active_fanout
           complete_fanout_progress
           complete_classification_lookup
-          complete_e1_default_flip.
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3480,7 +3808,8 @@ Section EndToEndModel.
           missing_dynamic_eval_gate_active_fanout
           complete_fanout_progress
           complete_classification_lookup
-          complete_e1_default_flip.
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3510,7 +3839,8 @@ Section EndToEndModel.
           state_mutation_bypass_active_fanout
           complete_fanout_progress
           complete_classification_lookup
-          complete_e1_default_flip.
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3540,7 +3870,8 @@ Section EndToEndModel.
           strict_io_bypass_active_fanout
           complete_fanout_progress
           complete_classification_lookup
-          complete_e1_default_flip.
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3570,7 +3901,8 @@ Section EndToEndModel.
           missing_purity_active_fanout
           complete_fanout_progress
           complete_classification_lookup
-          complete_e1_default_flip.
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3600,7 +3932,8 @@ Section EndToEndModel.
           missing_budget_active_fanout
           complete_fanout_progress
           complete_classification_lookup
-          complete_e1_default_flip.
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3630,7 +3963,8 @@ Section EndToEndModel.
           partial_dispatch_active_fanout
           complete_fanout_progress
           complete_classification_lookup
-          complete_e1_default_flip.
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool

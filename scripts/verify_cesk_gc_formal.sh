@@ -392,6 +392,10 @@ run_tlc "threading_end_to_end_e1_legacy_default_ungated" "ThreadingEndToEndInter
   fail "The invariant of E1LegacyProducersSuppressed is equal to FALSE"
 run_tlc "threading_end_to_end_e1_trigger_missing_backstop" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_e1_trigger_missing_backstop.cfg" \
   fail "The invariant of E1FailedTriggerBackstopped is equal to FALSE"
+run_tlc "threading_end_to_end_e1_satb_success_missing_release" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_e1_satb_success_missing_release.cfg" \
+  fail "The invariant of E1FinalCycleRelease is equal to FALSE"
+run_tlc "threading_end_to_end_e1_satb_abort_missing_stw" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_e1_satb_abort_missing_stw.cfg" \
+  fail "The invariant of E1SatbAbortPostsFreshStw is equal to FALSE"
 run_tlc "threading_end_to_end_active_fanout_missing_purity" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_active_fanout_missing_purity.cfg" \
   fail "The invariant of ActiveFanoutGateComplete is equal to FALSE"
 run_tlc "threading_end_to_end_active_fanout_missing_budget" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_active_fanout_missing_budget.cfg" \

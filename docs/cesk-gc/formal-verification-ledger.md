@@ -421,7 +421,10 @@ capped debug Robot replay after the conditional canary produced the expected fri
   default path. A posted `CollectRendezvous` either completes the SATB initial/final rendezvous sequence and releases
   workers, or a SATB panic / closed final-sweep result becomes an abort that posts and runs a fresh STW rendezvous
   backstop. In both cases the request is cleared, parked workers resume, witness-ok is reset, and GC-in-progress is
-  released.
+  released. The threading E2E envelope now imports this theorem directly: its
+  `E1SatbStwDriverSafe` component derives posted-driver release and rejects
+  both a SATB success path that leaves witness/driver state uncleared and an
+  abort path that omits the fresh STW rendezvous request.
 - `formal/rocq/gc/OperatorCacheEpoch.v` and `formal/lean/gc/OperatorCacheEpoch.lean`: prove the pointer-keyed
   operator-cache sweep-epoch obligation. A returned cache entry is current if the local sweep-epoch guard runs before
   lookup; if the local epoch is stale, the guarded lookup misses after clearing the cache.
@@ -1240,12 +1243,14 @@ facts the proofs rely on:
   `SchedulerDirectFanoutWavefrontRefinement.v`,
   `SchedulerFanoutAdmissionCompleteness.v`,
   `CollapseFanoutAdmissionCompleteness.v`, `SchedulerFanoutProgress.v`, and
-  `SchedulerGcBoundary.v`, plus `E1DefaultConcurrentFlip.v`: classification-table
+  `SchedulerGcBoundary.v`, plus `E1DefaultConcurrentFlip.v` and
+  `E1SatbStwDriverProgress.v`: classification-table
   range disjointness, wavefront edge coverage, direct-fanout independent-wavefront
   refinement, admitted branch/collapse slot representation, FANOUT participant
   accounting, parked-worker resume, worker completion-drop accounting, the
   GC-facing scheduler root/admission boundary, and the E1 dedicated default-flip
-  request/backstop boundary are part of the same end-to-end proof boundary.
+  request/backstop boundary plus the SATB-success-or-fresh-STW driver release
+  boundary are part of the same end-to-end proof boundary.
   The Rocq envelope now also imports `CESKCollectorSafety.v` and proves
   `end_to_end_safe_feeds_cesk_index_gc_safety`: from `EndToEndSafe` it extracts
   the `gc_window_safe` scheduler-root premises, feeds them into
@@ -1270,7 +1275,11 @@ facts the proofs rely on:
   legacy-default and trigger-backstop E2E discriminators fail specifically on
   `E1LegacyProducersSuppressed` and `E1FailedTriggerBackstopped`, matching the
   default dedicated-regime and FANOUT rendezvous-trigger premises composed by
-  `E1DefaultConcurrentFlip`. The missing dependency-edge and effect-conflict-edge
+  `E1DefaultConcurrentFlip`. The E1 SATB/STW E2E discriminators fail
+  specifically on `E1FinalCycleRelease` when the success path does not clear
+  witness/driver state, and on `E1SatbAbortPostsFreshStw` when abort does not
+  post the fresh STW backstop, matching the shipped driver progress theorem
+  composed by `E1SatbStwDriverProgress`. The missing dependency-edge and effect-conflict-edge
   E2E discriminators now fail specifically on `SchedulerWavefrontEdgesComplete`,
   and the partial
   direct-dispatch discriminator fails on

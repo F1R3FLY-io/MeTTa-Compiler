@@ -870,8 +870,10 @@ line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerWavefrontPara
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerEffectConflictCompleteness" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerClassificationLookup" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "E1DefaultConcurrentFlip" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "E1SatbStwDriverProgress" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "CESKCollectorSafety" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module Collector :=" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module E1Driver :=" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "gc_window_safe_exports_boundary_driver_roots" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "end_to_end_safe_implies_gc_window_safe" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "end_to_end_safe_feeds_cesk_index_gc_safety" >/dev/null
@@ -888,6 +890,11 @@ line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "complete_e1_default_fl
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "e1_default_flip_safe_excludes_driverless_or_stuck_request" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "legacy_default_ungated_e1_default_flip_exposes_end_to_end_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "trigger_failure_missing_backstop_exposes_end_to_end_gap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "e1_satb_stw_driver_safe_implies_released" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "e1_satb_stw_driver_safe_clears_sticky_request_and_witness" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "panic_or_closed_final_sweep_exposes_driver_abort" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_e1_satb_success_release_exposes_end_to_end_gap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_e1_satb_abort_stw_backstop_exposes_end_to_end_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_dependency_edge_exposes_incomplete_reordering" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_effect_conflict_edge_exposes_incomplete_reordering" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "active_fanout_gate_safe_implies_admission_complete" >/dev/null
@@ -929,18 +936,25 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronStartupDelivery.tla" "4"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolLifecycle.tla" "3"
-assert_count "scripts/verify_cesk_gc_formal.sh" "ThreadingEndToEndInterleaving.tla" "37"
+assert_count "scripts/verify_cesk_gc_formal.sh" "ThreadingEndToEndInterleaving.tla" "39"
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_classification_no_shift" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationRangesDisjoint is equal to FALSE" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_e1_legacy_default_ungated" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "E1LegacyProducersSuppressed is equal to FALSE" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_e1_trigger_missing_backstop" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "E1FailedTriggerBackstopped is equal to FALSE" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_e1_satb_success_missing_release" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "E1FinalCycleRelease is equal to FALSE" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_e1_satb_abort_missing_stw" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "E1SatbAbortPostsFreshStw is equal to FALSE" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveFanoutGateComplete" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "SchedulerClassificationRangesDisjoint" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "E1DefaultFlipSafe" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "E1LegacyProducersSuppressed" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "E1FailedTriggerBackstopped" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "E1SatbStwDriverSafe" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "E1FinalCycleRelease" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "E1SatbAbortPostsFreshStw" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveFanoutAdmissionComplete" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "CollapseFanoutAdmissionComplete" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveTransducerDegreeMatches" >/dev/null

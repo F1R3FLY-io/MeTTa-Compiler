@@ -286,6 +286,8 @@ run_tlc "scheduler_transducer_zero_cap_bug" "SchedulerTransducerParallelism.tla"
   fail "The invariant of NonZeroDegree is equal to FALSE"
 run_tlc "scheduler_transducer_underutilized" "SchedulerTransducerParallelism.tla" "MC_SchedulerTransducerParallelism_underutilized.cfg" \
   fail "The invariant of MaximalBeforeCap is equal to FALSE"
+run_tlc "scheduler_transducer_nonbranch_degree" "SchedulerTransducerParallelism.tla" "MC_SchedulerTransducerParallelism_nonbranch_degree.cfg" \
+  fail "The invariant of DefaultGateSound is equal to FALSE"
 run_tlc "scheduler_fanout_admission_all" "SchedulerFanoutAdmissionCompleteness.tla" "MC_SchedulerFanoutAdmissionCompleteness_all.cfg" \
   pass ""
 run_tlc "scheduler_fanout_admission_partial" "SchedulerFanoutAdmissionCompleteness.tla" "MC_SchedulerFanoutAdmissionCompleteness_partial.cfg" \

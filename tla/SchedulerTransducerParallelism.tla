@@ -12,7 +12,8 @@
 EXTENDS Naturals
 
 CONSTANTS CostClass, BranchCount, MaxParallel,
-          ClampZeroCap, UnderutilizeBeforeCap
+          ClampZeroCap, UnderutilizeBeforeCap,
+          OverrideDegree, ForcedDegree
 
 VARIABLE phase
 
@@ -46,7 +47,7 @@ IdealDegree ==
   ELSE
     DefaultDegree(CostClass)
 
-Degree ==
+ComputedDegree ==
   IF UnderutilizeBeforeCap
      /\ BranchParallel(CostClass)
      /\ BranchCount > 1
@@ -55,6 +56,9 @@ Degree ==
     BranchCount - 1
   ELSE
     IdealDegree
+
+Degree ==
+  IF OverrideDegree THEN ForcedDegree ELSE ComputedDegree
 
 Init ==
   phase = "checked"
@@ -70,6 +74,8 @@ TypeOK ==
   /\ MaxParallel \in Nat
   /\ ClampZeroCap \in BOOLEAN
   /\ UnderutilizeBeforeCap \in BOOLEAN
+  /\ OverrideDegree \in BOOLEAN
+  /\ ForcedDegree \in Nat
   /\ phase = "checked"
 
 NonZeroDegree ==

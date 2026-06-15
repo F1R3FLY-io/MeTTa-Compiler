@@ -75,6 +75,8 @@ Module KSpine :=
   MeTTaTron_GC_KSpineCurrentWork.
 Module VmNested :=
   MeTTaTron_GC_VmNestedLocals.
+Module Transducer :=
+  MeTTaTron_GC_SchedulerTransducerParallelism.
 Module E1Default :=
   MeTTaTron_GC_E1DefaultConcurrentFlip.
 Module E1Driver :=
@@ -2897,6 +2899,50 @@ Section EndToEndModel.
     active_transducer_maximal_before_cap c /\
     active_transducer_default_gate_sound c.
 
+  Theorem active_transducer_degree_match_implies_maximal_before_cap :
+    forall c,
+      active_transducer_degree_matches c ->
+      active_transducer_maximal_before_cap c.
+  Proof.
+    intros c Hmatches Hclass Hbranches Hcap.
+    unfold active_transducer_degree_matches in Hmatches.
+    unfold active_transducer_maximal_before_cap.
+    rewrite Hmatches.
+    apply Transducer.branch_degree_maximal_before_cap; assumption.
+  Qed.
+
+  Theorem active_transducer_degree_match_implies_default_gate_sound :
+    forall c,
+      active_transducer_degree_matches c ->
+      active_transducer_default_gate_sound c.
+  Proof.
+    intros c Hmatches Hdegree.
+    unfold active_transducer_degree_matches in Hmatches.
+    unfold active_transducer_default_gate_sound.
+    rewrite Hmatches in Hdegree.
+    exact
+      (Transducer.branch_degree_gate_sound
+        (active_cost_class c)
+        (active_branch_count c)
+        (active_max_parallel c)
+        Hdegree).
+  Qed.
+
+  Theorem active_transducer_degree_match_zero_cap_degrades_to_sequential :
+    forall c,
+      active_transducer_degree_matches c ->
+      branch_parallel_class (active_cost_class c) ->
+      1 < active_branch_count c ->
+      active_max_parallel c = 0 ->
+      active_parallelism_degree c = 1.
+  Proof.
+    intros c Hmatches Hclass Hbranches Hzero.
+    unfold active_transducer_degree_matches in Hmatches.
+    rewrite Hmatches.
+    rewrite Hzero.
+    apply Transducer.zero_cap_degrades_to_sequential_nonzero; assumption.
+  Qed.
+
   Definition active_blocks_parallel_dispatch
       (c : ActiveFanoutConfig)
       : Prop :=
@@ -3297,11 +3343,20 @@ Section EndToEndModel.
   Theorem complete_active_transducer_safe :
     active_transducer_safe complete_active_fanout.
   Proof.
-    unfold active_transducer_safe, active_transducer_degree_matches,
-      active_transducer_maximal_before_cap,
-      active_transducer_default_gate_sound, complete_active_fanout.
-    simpl.
-    repeat split; try reflexivity; intros; exact I.
+    unfold active_transducer_safe.
+    split.
+    - unfold active_transducer_degree_matches, complete_active_fanout.
+      simpl.
+      reflexivity.
+    - split.
+      + apply active_transducer_degree_match_implies_maximal_before_cap.
+        unfold active_transducer_degree_matches, complete_active_fanout.
+        simpl.
+        reflexivity.
+      + apply active_transducer_degree_match_implies_default_gate_sound.
+        unfold active_transducer_degree_matches, complete_active_fanout.
+        simpl.
+        reflexivity.
   Qed.
 
   Theorem complete_active_fanout_stack_safe :
@@ -3408,10 +3463,22 @@ Section EndToEndModel.
     ~ active_fanout_stack_safe zero_cap_bug_active_fanout.
   Proof.
     intros [_ [[Hmatches _] _]].
-    unfold active_transducer_degree_matches, zero_cap_bug_active_fanout in
-      Hmatches.
-    simpl in Hmatches.
-    discriminate Hmatches.
+    assert
+      (Hclass :
+        branch_parallel_class
+          (active_cost_class zero_cap_bug_active_fanout)) by
+      (unfold zero_cap_bug_active_fanout; simpl; exact I).
+    assert (Hbranches : 1 < active_branch_count zero_cap_bug_active_fanout) by
+      (unfold zero_cap_bug_active_fanout; simpl; lia).
+    assert (Hzero : active_max_parallel zero_cap_bug_active_fanout = 0) by
+      (unfold zero_cap_bug_active_fanout; reflexivity).
+    pose proof
+      (active_transducer_degree_match_zero_cap_degrades_to_sequential
+        zero_cap_bug_active_fanout Hmatches Hclass Hbranches Hzero)
+      as Hsequential.
+    unfold zero_cap_bug_active_fanout in Hsequential.
+    simpl in Hsequential.
+    discriminate Hsequential.
   Qed.
 
   Theorem underutilized_transducer_exposes_envelope_gap :

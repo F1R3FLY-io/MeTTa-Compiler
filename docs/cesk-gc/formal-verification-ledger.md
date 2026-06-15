@@ -380,8 +380,9 @@ capped debug Robot replay after the conditional canary produced the expected fri
   model-check the WFST transducer parallelism contract used by the evaluator's `parallelism_degree > 1` gate. The
   default table never constructs degree 0; only branch-parallel classes can cross the default fanout gate; branch-aware
   transduction uses every available branch before the cap and respects the cap; and a zero cap degrades to sequential
-  degree 1 instead of an invalid degree 0. TLC rejects both the old zero-cap shape and an underutilized-before-cap
-  shape.
+  degree 1 instead of an invalid degree 0. The E2E threading proof consumes the standalone branch-degree maximality,
+  gate-soundness, and zero-cap theorems rather than reproving those facts by local simplification. TLC rejects the old
+  zero-cap shape, an underutilized-before-cap shape, and a forced non-branch degree > 1.
 - `formal/rocq/gc/DedicatedHandoff.v`: proves the E1 dedicated-thread handoff ownership rule. Once a root vector has
   been successfully sent to the GC thread, response-channel failure cannot justify an inline fallback because the
   mutator no longer owns those roots; failed sends still return the roots for inline fallback. It also proves the

@@ -258,8 +258,8 @@ The formal lane covers the main scheduler obligations:
   single-wave case; dependency-bearing DAGs require the general wavefront
   builder.
 - `SchedulerTransducerParallelism.v` and
-  `SchedulerTransducerParallelism.tla` prove zero-cap safety and prevent
-  underutilized branch-parallel actions.
+  `SchedulerTransducerParallelism.tla` prove zero-cap safety, reject
+  non-branch degree > 1, and prevent underutilized branch-parallel actions.
 - `SchedulerFanoutAdmissionCompleteness.v` and
   `SchedulerFanoutAdmissionCompleteness.tla` prove the requested degree is
   admitted when the runtime gates allow it.
@@ -444,6 +444,8 @@ active rule-match fanout dispatch
   -> branch threshold, WFST degree, purity, depth, pool, and budget gates pass
 branch count <= safe cap
   -> branch-aware transduction uses every available branch
+degree > 1
+  -> the cost class is branch-parallel
 max_parallel == 0
   -> degree degrades to sequential 1, never invalid 0
 admitted branch fanout
@@ -459,6 +461,7 @@ This contract is checked by:
 - `tla/MC_SchedulerTransducerParallelism_zero_cap.cfg`
 - `tla/MC_SchedulerTransducerParallelism_zero_cap_bug.cfg`
 - `tla/MC_SchedulerTransducerParallelism_underutilized.cfg`
+- `tla/MC_SchedulerTransducerParallelism_nonbranch_degree.cfg`
 - `formal/rocq/gc/SchedulerFanoutAdmissionCompleteness.v`
 - `tla/SchedulerFanoutAdmissionCompleteness.tla`
 - `tla/MC_SchedulerFanoutAdmissionCompleteness_all.cfg`

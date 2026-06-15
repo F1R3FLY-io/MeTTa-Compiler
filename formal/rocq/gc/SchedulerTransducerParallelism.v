@@ -108,6 +108,15 @@ Proof.
     + apply safe_cap_positive.
 Qed.
 
+Theorem branch_degree_gate_sound :
+  forall class branch_count max_parallel,
+    1 < branch_degree class branch_count max_parallel ->
+    branch_parallel_class class.
+Proof.
+  destruct class; simpl; intros branch_count max_parallel Hdegree;
+    try lia; exact I.
+Qed.
+
 Theorem branch_degree_respects_safe_cap :
   forall class branch_count max_parallel,
     branch_parallel_class class ->

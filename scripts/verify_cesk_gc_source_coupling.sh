@@ -609,6 +609,12 @@ line_no "formal/rocq/gc/SchedulerActiveFanoutGate.v" "Definition active_fanout_a
 line_no "formal/rocq/gc/SchedulerActiveFanoutGate.v" "Theorem active_fanout_requires_purity_gate" >/dev/null
 line_no "formal/rocq/gc/SchedulerActiveFanoutGate.v" "Theorem active_fanout_requires_budget_gate" >/dev/null
 line_no "formal/rocq/gc/SchedulerActiveFanoutGate.v" "Theorem active_complete_dispatch_represents_every_slot" >/dev/null
+line_no "formal/rocq/gc/SchedulerTransducerParallelism.v" "Theorem branch_degree_gate_sound" >/dev/null
+line_no "formal/rocq/gc/SchedulerTransducerParallelism.v" "Theorem branch_degree_maximal_before_cap" >/dev/null
+line_no "formal/rocq/gc/SchedulerTransducerParallelism.v" "Theorem zero_cap_degrades_to_sequential_nonzero" >/dev/null
+line_no "tla/SchedulerTransducerParallelism.tla" "OverrideDegree" >/dev/null
+line_no "tla/SchedulerTransducerParallelism.tla" "ForcedDegree" >/dev/null
+line_no "tla/MC_SchedulerTransducerParallelism_nonbranch_degree.cfg" "DefaultGateSound" >/dev/null
 line_no "tla/SchedulerActiveFanoutGate.tla" "NoDispatchWithoutPurityGate ==" >/dev/null
 line_no "tla/SchedulerActiveFanoutGate.tla" "NoDispatchWithoutBudgetGate ==" >/dev/null
 line_no "tla/SchedulerActiveFanoutGate.tla" "CompleteDispatch ==" >/dev/null
@@ -881,6 +887,7 @@ line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module Dedicated :=" >
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module DriverChannel :=" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module KSpine :=" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module VmNested :=" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module Transducer :=" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module E1Driver :=" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "gc_window_safe_exports_boundary_driver_roots" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "end_to_end_safe_implies_gc_window_safe" >/dev/null
@@ -936,6 +943,12 @@ line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_outcomes_vm_ne
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_dependency_edge_exposes_incomplete_reordering" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_effect_conflict_edge_exposes_incomplete_reordering" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "active_fanout_gate_safe_implies_admission_complete" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "active_transducer_degree_match_implies_maximal_before_cap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Transducer.branch_degree_maximal_before_cap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "active_transducer_degree_match_implies_default_gate_sound" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Transducer.branch_degree_gate_sound" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "active_transducer_degree_match_zero_cap_degrades_to_sequential" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Transducer.zero_cap_degrades_to_sequential_nonzero" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "degree_capped_active_fanout_exposes_admission_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "threshold_capped_collapse_exposes_admission_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "rooted_closed_scheduler_boundary_safe" >/dev/null
@@ -1103,6 +1116,7 @@ line_no "scripts/verify_cesk_gc_formal.sh" "The invariant of CollapseFanoutAdmis
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_active_fanout_zero_cap_bug" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_active_fanout_underutilized" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_active_fanout_nonbranch_degree" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "scheduler_transducer_nonbranch_degree" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_active_fanout_dynamic_eval_missing_gate" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_active_fanout_state_mutation_bypass" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_active_fanout_strict_io_bypass" >/dev/null

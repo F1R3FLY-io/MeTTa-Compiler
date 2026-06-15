@@ -18,6 +18,7 @@ Require Import CollapseFanoutAdmissionCompleteness.
 Require Import DedicatedHandoff.
 Require Import E1DefaultConcurrentFlip.
 Require Import E1SatbStwDriverProgress.
+Require Import GcDriverChannelProtocol.
 Require Import SchedulerActiveFanoutGate.
 Require Import SchedulerClassificationLookup.
 Require Import SchedulerDirectFanoutWavefrontRefinement.
@@ -66,6 +67,8 @@ Module Collector :=
   MeTTaTron_GC_CESKCollectorSafety.
 Module Dedicated :=
   MeTTaTron_GC_DedicatedHandoff.
+Module DriverChannel :=
+  MeTTaTron_GC_GcDriverChannelProtocol.
 Module E1Default :=
   MeTTaTron_GC_E1DefaultConcurrentFlip.
 Module E1Driver :=
@@ -847,6 +850,307 @@ Section EndToEndModel.
     simpl in Hreply.
     destruct (Hreply I) as [_ [_ Hattempted]].
     exact Hattempted.
+  Qed.
+
+  Record DriverChannelConfig : Type := {
+    channel_request_sender_stored : Prop;
+    channel_request_receiver_owned : Prop;
+    channel_collect_sent : Prop;
+    channel_response_sender_carried : Prop;
+    channel_response_receiver_owned : Prop;
+    channel_driver_received_collect : Prop;
+    channel_reply_attempted : Prop;
+    channel_caller_waiting : Prop;
+    channel_fire_and_forget_sent : Prop
+  }.
+
+  Definition channel_received_has_receiver
+      (c : DriverChannelConfig)
+      : Prop :=
+    channel_driver_received_collect c ->
+    channel_request_receiver_owned c.
+
+  Definition channel_receiver_has_sender
+      (c : DriverChannelConfig)
+      : Prop :=
+    channel_request_receiver_owned c ->
+    channel_request_sender_stored c.
+
+  Definition channel_wait_sent_collect
+      (c : DriverChannelConfig)
+      : Prop :=
+    channel_caller_waiting c -> channel_collect_sent c.
+
+  Definition channel_collect_carries_response_sender
+      (c : DriverChannelConfig)
+      : Prop :=
+    channel_collect_sent c -> channel_response_sender_carried c.
+
+  Definition channel_collect_has_response_receiver
+      (c : DriverChannelConfig)
+      : Prop :=
+    channel_collect_sent c -> channel_response_receiver_owned c.
+
+  Definition channel_collect_reaches_driver
+      (c : DriverChannelConfig)
+      : Prop :=
+    channel_collect_sent c -> channel_driver_received_collect c.
+
+  Definition channel_driver_reply_attempted
+      (c : DriverChannelConfig)
+      : Prop :=
+    channel_driver_received_collect c -> channel_reply_attempted c.
+
+  Definition channel_reply_from_driver_receive
+      (c : DriverChannelConfig)
+      : Prop :=
+    channel_reply_attempted c -> channel_driver_received_collect c.
+
+  Definition channel_driver_receive_from_collect
+      (c : DriverChannelConfig)
+      : Prop :=
+    channel_driver_received_collect c -> channel_collect_sent c.
+
+  Definition channel_reply_has_waiter
+      (c : DriverChannelConfig)
+      : Prop :=
+    channel_reply_attempted c -> channel_caller_waiting c.
+
+  Definition channel_fire_and_forget_no_wait
+      (c : DriverChannelConfig)
+      : Prop :=
+    channel_fire_and_forget_sent c -> ~ channel_caller_waiting c.
+
+  Definition channel_fire_and_forget_no_reply
+      (c : DriverChannelConfig)
+      : Prop :=
+    channel_fire_and_forget_sent c -> ~ channel_reply_attempted c.
+
+  Definition driver_channel_protocol_safe
+      (c : DriverChannelConfig)
+      : Prop :=
+    channel_received_has_receiver c /\
+    channel_receiver_has_sender c /\
+    channel_wait_sent_collect c /\
+    channel_collect_carries_response_sender c /\
+    channel_collect_has_response_receiver c /\
+    channel_collect_reaches_driver c /\
+    channel_driver_reply_attempted c /\
+    channel_reply_from_driver_receive c /\
+    channel_driver_receive_from_collect c /\
+    channel_reply_has_waiter c /\
+    channel_fire_and_forget_no_wait c /\
+    channel_fire_and_forget_no_reply c.
+
+  Definition complete_driver_channel : DriverChannelConfig :=
+    {| channel_request_sender_stored := True;
+       channel_request_receiver_owned := True;
+       channel_collect_sent := True;
+       channel_response_sender_carried := True;
+       channel_response_receiver_owned := True;
+       channel_driver_received_collect := True;
+       channel_reply_attempted := True;
+       channel_caller_waiting := True;
+       channel_fire_and_forget_sent := False |}.
+
+  Definition missing_request_sender_driver_channel : DriverChannelConfig :=
+    {| channel_request_sender_stored := False;
+       channel_request_receiver_owned := True;
+       channel_collect_sent := True;
+       channel_response_sender_carried := True;
+       channel_response_receiver_owned := True;
+       channel_driver_received_collect := True;
+       channel_reply_attempted := True;
+       channel_caller_waiting := True;
+       channel_fire_and_forget_sent := False |}.
+
+  Definition missing_reply_driver_channel : DriverChannelConfig :=
+    {| channel_request_sender_stored := True;
+       channel_request_receiver_owned := True;
+       channel_collect_sent := True;
+       channel_response_sender_carried := True;
+       channel_response_receiver_owned := True;
+       channel_driver_received_collect := True;
+       channel_reply_attempted := False;
+       channel_caller_waiting := True;
+       channel_fire_and_forget_sent := False |}.
+
+  Definition orphan_reply_driver_channel : DriverChannelConfig :=
+    {| channel_request_sender_stored := True;
+       channel_request_receiver_owned := True;
+       channel_collect_sent := True;
+       channel_response_sender_carried := True;
+       channel_response_receiver_owned := True;
+       channel_driver_received_collect := True;
+       channel_reply_attempted := True;
+       channel_caller_waiting := False;
+       channel_fire_and_forget_sent := False |}.
+
+  Definition fire_and_forget_waits_driver_channel : DriverChannelConfig :=
+    {| channel_request_sender_stored := True;
+       channel_request_receiver_owned := True;
+       channel_collect_sent := True;
+       channel_response_sender_carried := True;
+       channel_response_receiver_owned := True;
+       channel_driver_received_collect := True;
+       channel_reply_attempted := True;
+       channel_caller_waiting := True;
+       channel_fire_and_forget_sent := True |}.
+
+  Theorem complete_driver_channel_protocol_safe :
+    driver_channel_protocol_safe complete_driver_channel.
+  Proof.
+    unfold driver_channel_protocol_safe, channel_received_has_receiver,
+      channel_receiver_has_sender, channel_wait_sent_collect,
+      channel_collect_carries_response_sender,
+      channel_collect_has_response_receiver, channel_collect_reaches_driver,
+      channel_driver_reply_attempted, channel_reply_from_driver_receive,
+      channel_driver_receive_from_collect, channel_reply_has_waiter,
+      channel_fire_and_forget_no_wait, channel_fire_and_forget_no_reply,
+      complete_driver_channel.
+    simpl.
+    repeat split; intros; try contradiction; exact I.
+  Qed.
+
+  Theorem driver_channel_protocol_safe_has_request_receive_producer :
+    forall c,
+      driver_channel_protocol_safe c ->
+      DriverChannel.RequestReceiveSafe
+        (channel_driver_received_collect c)
+        (channel_request_sender_stored c)
+        (channel_request_receiver_owned c).
+  Proof.
+    intros c Hsafe.
+    unfold driver_channel_protocol_safe in Hsafe.
+    destruct Hsafe as [Hreceived [Hreceiver _]].
+    eapply DriverChannel.spawned_request_receive_has_producer.
+    - exact Hreceived.
+    - exact Hreceiver.
+  Qed.
+
+  Theorem driver_channel_protocol_safe_has_response_wait_producer :
+    forall c,
+      driver_channel_protocol_safe c ->
+      DriverChannel.ResponseWaitSafe
+        (channel_caller_waiting c)
+        (channel_response_sender_carried c)
+        (channel_response_receiver_owned c)
+        (channel_reply_attempted c).
+  Proof.
+    intros c Hsafe.
+    unfold driver_channel_protocol_safe in Hsafe.
+    destruct Hsafe as
+      [_ [_ [Hwait [Hsender [Hreceiver [Hreaches [Hreply _]]]]]]].
+    eapply DriverChannel.successful_collect_wait_has_response_producer.
+    - exact Hwait.
+    - exact Hsender.
+    - exact Hreceiver.
+    - exact Hreaches.
+    - exact Hreply.
+  Qed.
+
+  Theorem driver_channel_protocol_safe_has_no_orphan_reply :
+    forall c,
+      driver_channel_protocol_safe c ->
+      DriverChannel.ReplySendNotOrphaned
+        (channel_reply_attempted c)
+        (channel_response_sender_carried c)
+        (channel_response_receiver_owned c)
+        (channel_caller_waiting c).
+  Proof.
+    intros c Hsafe.
+    unfold driver_channel_protocol_safe in Hsafe.
+    destruct Hsafe as
+      [_ [_ [_ [Hsender [Hreceiver [_ [_ [Hreply_driver
+        [Hdriver_collect [Hreply_wait _]]]]]]]]]].
+    eapply DriverChannel.reply_attempt_is_not_orphaned.
+    - exact Hreply_driver.
+    - exact Hdriver_collect.
+    - exact Hsender.
+    - exact Hreceiver.
+    - exact Hreply_wait.
+  Qed.
+
+  Theorem driver_channel_protocol_safe_fire_and_forget_no_wait :
+    forall c,
+      driver_channel_protocol_safe c ->
+      DriverChannel.FireAndForgetSafe
+        (channel_fire_and_forget_sent c)
+        (channel_caller_waiting c)
+        (channel_reply_attempted c).
+  Proof.
+    intros c Hsafe.
+    unfold driver_channel_protocol_safe in Hsafe.
+    destruct Hsafe as
+      [_ [_ [_ [_ [_ [_ [_ [_ [_ [_ [Hno_wait Hno_reply]]]]]]]]]]].
+    eapply DriverChannel.fire_and_forget_request_has_no_response_wait.
+    - exact Hno_wait.
+    - exact Hno_reply.
+  Qed.
+
+  Theorem driver_channel_protocol_safe_exports_collect_wait :
+    forall c,
+      driver_channel_protocol_safe c ->
+      channel_caller_waiting c ->
+      (channel_request_sender_stored c /\
+       channel_request_receiver_owned c) /\
+      (channel_response_sender_carried c /\
+       channel_response_receiver_owned c /\
+       channel_reply_attempted c).
+  Proof.
+    intros c Hsafe Hwaiting.
+    unfold driver_channel_protocol_safe in Hsafe.
+    destruct Hsafe as
+      [Hreceived [Hreceiver [Hwait [Hsender [Hresponse_receiver
+        [Hreaches [Hdriver_reply _]]]]]]].
+    eapply DriverChannel.gc_driver_channel_protocol_safe.
+    - exact Hreceived.
+    - exact Hreceiver.
+    - exact Hwait.
+    - exact Hsender.
+    - exact Hresponse_receiver.
+    - exact Hreaches.
+    - exact Hdriver_reply.
+    - exact Hwaiting.
+  Qed.
+
+  Theorem missing_request_sender_exposes_driver_channel_gap :
+    ~ driver_channel_protocol_safe missing_request_sender_driver_channel.
+  Proof.
+    intros [_ [Hreceiver _]].
+    unfold channel_receiver_has_sender,
+      missing_request_sender_driver_channel in Hreceiver.
+    simpl in Hreceiver.
+    exact (Hreceiver I).
+  Qed.
+
+  Theorem missing_reply_exposes_driver_channel_gap :
+    ~ driver_channel_protocol_safe missing_reply_driver_channel.
+  Proof.
+    intros [_ [_ [_ [_ [_ [_ [Hreply _]]]]]]].
+    unfold channel_driver_reply_attempted,
+      missing_reply_driver_channel in Hreply.
+    simpl in Hreply.
+    exact (Hreply I).
+  Qed.
+
+  Theorem orphan_reply_exposes_driver_channel_gap :
+    ~ driver_channel_protocol_safe orphan_reply_driver_channel.
+  Proof.
+    intros [_ [_ [_ [_ [_ [_ [_ [_ [_ [Hwait _]]]]]]]]]].
+    unfold channel_reply_has_waiter, orphan_reply_driver_channel in Hwait.
+    simpl in Hwait.
+    exact (Hwait I).
+  Qed.
+
+  Theorem fire_and_forget_wait_exposes_driver_channel_gap :
+    ~ driver_channel_protocol_safe fire_and_forget_waits_driver_channel.
+  Proof.
+    intros [_ [_ [_ [_ [_ [_ [_ [_ [_ [_ [Hno_wait _]]]]]]]]]]].
+    unfold channel_fire_and_forget_no_wait,
+      fire_and_forget_waits_driver_channel in Hno_wait.
+    simpl in Hno_wait.
+    exact (Hno_wait I I).
   Qed.
 
   Definition WaveAssignment : Type := Task -> nat.
@@ -2969,6 +3273,7 @@ Section EndToEndModel.
       (e1_default_flip : E1DefaultFlipConfig)
       (e1_satb_stw_driver : E1SatbStwDriverConfig)
       (dedicated_handoff : DedicatedHandoffConfig)
+      (driver_channel : DriverChannelConfig)
       : Prop :=
     schedule_envelope_safe w wave /\
     gc_window_safe
@@ -2990,7 +3295,8 @@ Section EndToEndModel.
     classification_lookup_safe classification_lookup /\
     e1_default_flip_safe e1_default_flip /\
     e1_satb_stw_driver_safe e1_satb_stw_driver /\
-    dedicated_handoff_safe dedicated_handoff.
+    dedicated_handoff_safe dedicated_handoff /\
+    driver_channel_protocol_safe driver_channel.
 
   Theorem end_to_end_safe_implies_gc_window_safe :
     forall w wave
@@ -3000,7 +3306,7 @@ Section EndToEndModel.
       late_worker_live
       spawn_latch cron_state cron_startup work_pool active_fanout
       fanout_progress classification_lookup e1_default_flip
-      e1_satb_stw_driver dedicated_handoff,
+      e1_satb_stw_driver dedicated_handoff driver_channel,
       end_to_end_safe
         w wave
         active_worker_live worker_rooted
@@ -3009,7 +3315,7 @@ Section EndToEndModel.
         late_worker_live
         spawn_latch cron_state cron_startup work_pool active_fanout
         fanout_progress classification_lookup e1_default_flip
-        e1_satb_stw_driver dedicated_handoff ->
+        e1_satb_stw_driver dedicated_handoff driver_channel ->
       gc_window_safe
         active_worker_live worker_rooted
         dispatch_live dispatch_rooted
@@ -3020,7 +3326,7 @@ Section EndToEndModel.
       batch_live batch_rooted late_worker_live spawn_latch cron_state
       cron_startup work_pool active_fanout fanout_progress
       classification_lookup e1_default_flip e1_satb_stw_driver
-      dedicated_handoff Hend.
+      dedicated_handoff driver_channel Hend.
     unfold end_to_end_safe in Hend.
     exact (proj1 (proj2 Hend)).
   Qed.
@@ -3033,7 +3339,7 @@ Section EndToEndModel.
       late_worker_live
       spawn_latch cron_state cron_startup work_pool active_fanout
       fanout_progress classification_lookup e1_default_flip
-      e1_satb_stw_driver dedicated_handoff
+      e1_satb_stw_driver dedicated_handoff driver_channel
       (StructuralRoot WorkerRoot SafepointRoot EnvAnchor DispatchAnchor
        InitialRoot ShadedDeletion AllocateBlack PublishedAlloc SegmentWritten
        SegmentPublished SlotWritten SlotPublished AddrReturned ReadObserved
@@ -3049,7 +3355,7 @@ Section EndToEndModel.
         late_worker_live
         spawn_latch cron_state cron_startup work_pool active_fanout
         fanout_progress classification_lookup e1_default_flip
-        e1_satb_stw_driver dedicated_handoff ->
+        e1_satb_stw_driver dedicated_handoff driver_channel ->
       (forall a,
           FutureTouch a ->
           @Collector.Reach BoundaryAddr
@@ -3120,7 +3426,7 @@ Section EndToEndModel.
       dispatch_rooted batch_live batch_rooted late_worker_live spawn_latch
       cron_state cron_startup work_pool active_fanout fanout_progress
       classification_lookup e1_default_flip e1_satb_stw_driver
-      dedicated_handoff StructuralRoot WorkerRoot
+      dedicated_handoff driver_channel StructuralRoot WorkerRoot
       SafepointRoot EnvAnchor DispatchAnchor InitialRoot ShadedDeletion
       AllocateBlack PublishedAlloc SegmentWritten SegmentPublished SlotWritten
       SlotPublished AddrReturned ReadObserved ConcurrentReturned ReuseReturned
@@ -3138,7 +3444,7 @@ Section EndToEndModel.
         late_worker_live
         spawn_latch cron_state cron_startup work_pool active_fanout
         fanout_progress classification_lookup e1_default_flip
-        e1_satb_stw_driver dedicated_handoff Hend)
+        e1_satb_stw_driver dedicated_handoff driver_channel Hend)
       as Hgc_window.
     destruct
       (gc_window_safe_exports_boundary_driver_roots
@@ -3175,7 +3481,8 @@ Section EndToEndModel.
         complete_classification_lookup
         complete_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live Hschedule.
     unfold end_to_end_safe.
@@ -3205,7 +3512,9 @@ Section EndToEndModel.
                                + apply complete_e1_default_flip_safe.
                                + split.
                                  * apply complete_e1_satb_stw_driver_safe.
-                                 * apply complete_dedicated_handoff_safe. }
+                                 * split.
+                                   -- apply complete_dedicated_handoff_safe.
+                                   -- apply complete_driver_channel_protocol_safe. }
   Qed.
 
   Theorem no_shift_classification_lookup_exposes_end_to_end_gap :
@@ -3232,7 +3541,8 @@ Section EndToEndModel.
           no_shift_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -3265,7 +3575,8 @@ Section EndToEndModel.
           complete_classification_lookup
           legacy_default_ungated_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -3297,7 +3608,8 @@ Section EndToEndModel.
           complete_classification_lookup
           trigger_failure_missing_backstop_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -3329,7 +3641,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           missing_e1_satb_success_release_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -3361,7 +3674,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           missing_e1_satb_abort_stw_backstop_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -3393,7 +3707,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          inline_after_consumed_dedicated_handoff.
+          inline_after_consumed_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -3425,11 +3740,144 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          missing_reply_dedicated_handoff.
+          missing_reply_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
     apply missing_reply_exposes_dedicated_handoff_gap.
+    tauto.
+  Qed.
+
+  Theorem missing_request_sender_driver_channel_exposes_end_to_end_gap :
+    forall w wave active_worker_live,
+      schedule_envelope_safe w wave ->
+      ~ end_to_end_safe
+          w
+          wave
+          active_worker_live
+          active_worker_live
+          true
+          true
+          true
+          true
+          false
+          complete_spawn_latch
+          (cron_final_due
+            (cron_worker_complete true
+              (cron_second_due (cron_first_due true))))
+          complete_startup
+          complete_work_pool
+          complete_active_fanout
+          complete_fanout_progress
+          complete_classification_lookup
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff
+          missing_request_sender_driver_channel.
+  Proof.
+    intros w wave active_worker_live Hschedule Hend.
+    unfold end_to_end_safe in Hend.
+    apply missing_request_sender_exposes_driver_channel_gap.
+    tauto.
+  Qed.
+
+  Theorem missing_reply_driver_channel_exposes_end_to_end_gap :
+    forall w wave active_worker_live,
+      schedule_envelope_safe w wave ->
+      ~ end_to_end_safe
+          w
+          wave
+          active_worker_live
+          active_worker_live
+          true
+          true
+          true
+          true
+          false
+          complete_spawn_latch
+          (cron_final_due
+            (cron_worker_complete true
+              (cron_second_due (cron_first_due true))))
+          complete_startup
+          complete_work_pool
+          complete_active_fanout
+          complete_fanout_progress
+          complete_classification_lookup
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff
+          missing_reply_driver_channel.
+  Proof.
+    intros w wave active_worker_live Hschedule Hend.
+    unfold end_to_end_safe in Hend.
+    apply missing_reply_exposes_driver_channel_gap.
+    tauto.
+  Qed.
+
+  Theorem orphan_reply_driver_channel_exposes_end_to_end_gap :
+    forall w wave active_worker_live,
+      schedule_envelope_safe w wave ->
+      ~ end_to_end_safe
+          w
+          wave
+          active_worker_live
+          active_worker_live
+          true
+          true
+          true
+          true
+          false
+          complete_spawn_latch
+          (cron_final_due
+            (cron_worker_complete true
+              (cron_second_due (cron_first_due true))))
+          complete_startup
+          complete_work_pool
+          complete_active_fanout
+          complete_fanout_progress
+          complete_classification_lookup
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff
+          orphan_reply_driver_channel.
+  Proof.
+    intros w wave active_worker_live Hschedule Hend.
+    unfold end_to_end_safe in Hend.
+    apply orphan_reply_exposes_driver_channel_gap.
+    tauto.
+  Qed.
+
+  Theorem fire_and_forget_wait_driver_channel_exposes_end_to_end_gap :
+    forall w wave active_worker_live,
+      schedule_envelope_safe w wave ->
+      ~ end_to_end_safe
+          w
+          wave
+          active_worker_live
+          active_worker_live
+          true
+          true
+          true
+          true
+          false
+          complete_spawn_latch
+          (cron_final_due
+            (cron_worker_complete true
+              (cron_second_due (cron_first_due true))))
+          complete_startup
+          complete_work_pool
+          complete_active_fanout
+          complete_fanout_progress
+          complete_classification_lookup
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff
+          fire_and_forget_waits_driver_channel.
+  Proof.
+    intros w wave active_worker_live Hschedule Hend.
+    unfold end_to_end_safe in Hend.
+    apply fire_and_forget_wait_exposes_driver_channel_gap.
     tauto.
   Qed.
 
@@ -3463,7 +3911,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state Hschedule Hgc Hcron
@@ -3507,7 +3956,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_startup work_pool
@@ -3552,7 +4002,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3587,7 +4038,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave cron_state cron_startup work_pool Hschedule Hcron Hstartup
       Hwork_pool Hend.
@@ -3622,7 +4074,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave cron_state cron_startup work_pool Hschedule Hcron Hstartup
       Hwork_pool Hend.
@@ -3663,7 +4116,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
@@ -3704,7 +4158,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
@@ -3745,7 +4200,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
@@ -3788,7 +4244,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3820,7 +4277,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -3851,7 +4309,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -3882,7 +4341,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -3913,7 +4373,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -3956,7 +4417,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4002,7 +4464,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4036,7 +4499,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4068,7 +4532,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4100,7 +4565,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4132,7 +4598,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4164,7 +4631,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4196,7 +4664,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4228,7 +4697,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4260,7 +4730,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4292,7 +4763,8 @@ Section EndToEndModel.
           complete_classification_lookup
           complete_e1_default_flip
           complete_e1_satb_stw_driver
-          complete_dedicated_handoff.
+          complete_dedicated_handoff
+          complete_driver_channel.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool

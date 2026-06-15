@@ -316,6 +316,11 @@ The formal lane covers the main scheduler obligations:
   ownership transfer explicit: after a successful dedicated-driver send, inline
   fallback is forbidden, response-channel failure is skip-only, and every
   consumed request must carry and attempt a reply producer.
+  `GcDriverChannelProtocol.v` is also composed into the same E2E envelope:
+  driver receives require the spawn-created request sender/owned receiver,
+  synchronous `Collect` waits require a carried response sender, caller-owned
+  response receiver, and driver reply attempt, reply sends cannot be orphaned,
+  and fire-and-forget requests cannot create response waits.
 
 These proofs are mandatory in `scripts/verify_cesk_gc_formal.sh`.
 
@@ -600,6 +605,10 @@ The composed end-to-end envelope is modeled by:
 - `tla/MC_ThreadingEndToEndInterleaving_e1_satb_abort_missing_stw.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_dedicated_handoff_inline_after_consumed.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_dedicated_handoff_missing_reply.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_driver_channel_no_request_sender.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_driver_channel_missing_reply.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_driver_channel_orphan_reply.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_driver_channel_fire_and_forget_wait.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_missing_purity.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_missing_budget.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_partial_dispatch.cfg`
@@ -638,7 +647,8 @@ The positive dependency-bearing and independent configs preserve
 `SchedulerClassificationRangesDisjoint`, `SchedulerWavefrontEdgesComplete`,
 `SchedulerDirectFanoutRefinesWavefront`, `ActiveFanoutAdmissionComplete`,
 `CollapseFanoutAdmissionComplete`, `E1DefaultFlipSafe`, and
-`E1SatbStwDriverSafe`, and `DedicatedHandoffSafe` inside the composed model.
+`E1SatbStwDriverSafe`, `DedicatedHandoffSafe`, and
+`DriverChannelProtocolSafe` inside the composed model.
 The no-shift classification config violates
 `SchedulerClassificationRangesDisjoint`. The E1 legacy-default and
 trigger-backstop configs violate `E1LegacyProducersSuppressed` and
@@ -649,7 +659,11 @@ and `E1SatbAbortPostsFreshStw` when an abort does not request the fresh STW
 backstop. The dedicated-handoff configs violate
 `DedicatedInlineFallbackHasRoots` when inline fallback runs after roots have
 been consumed, and `DedicatedCollectReplyProducerSafe` when a consumed request
-omits the reply attempt. The missing dependency and missing effect-conflict
+omits the reply attempt. The driver-channel configs violate
+`DriverRequestReceiveHasProducer`, `DriverResponseWaitHasProducer`,
+`DriverNoOrphanReplySend`, and `DriverFireAndForgetDoesNotWait` for the
+corresponding missing request sender, missing reply, orphan reply, and
+fire-and-forget wait shapes. The missing dependency and missing effect-conflict
 edge configs violate
 `SchedulerWavefrontEdgesComplete`. The partial direct-dispatch config violates
 `SchedulerDirectFanoutRefinesWavefront`. The degree-as-spawn-cap and

@@ -872,9 +872,11 @@ line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerClassificatio
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "DedicatedHandoff" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "E1DefaultConcurrentFlip" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "E1SatbStwDriverProgress" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "GcDriverChannelProtocol" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "CESKCollectorSafety" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module Collector :=" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module Dedicated :=" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module DriverChannel :=" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module E1Driver :=" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "gc_window_safe_exports_boundary_driver_roots" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "end_to_end_safe_implies_gc_window_safe" >/dev/null
@@ -903,6 +905,15 @@ line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "dedicated_handoff_safe
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "dedicated_handoff_caught_result_still_replies" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "inline_after_consumed_dedicated_handoff_exposes_end_to_end_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_reply_dedicated_handoff_exposes_end_to_end_gap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "driver_channel_protocol_safe_has_request_receive_producer" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "driver_channel_protocol_safe_has_response_wait_producer" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "driver_channel_protocol_safe_has_no_orphan_reply" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "driver_channel_protocol_safe_fire_and_forget_no_wait" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "driver_channel_protocol_safe_exports_collect_wait" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_request_sender_driver_channel_exposes_end_to_end_gap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_reply_driver_channel_exposes_end_to_end_gap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "orphan_reply_driver_channel_exposes_end_to_end_gap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "fire_and_forget_wait_driver_channel_exposes_end_to_end_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_dependency_edge_exposes_incomplete_reordering" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_effect_conflict_edge_exposes_incomplete_reordering" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "active_fanout_gate_safe_implies_admission_complete" >/dev/null
@@ -944,7 +955,7 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronStartupDelivery.tla" "4"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolLifecycle.tla" "3"
-assert_count "scripts/verify_cesk_gc_formal.sh" "ThreadingEndToEndInterleaving.tla" "41"
+assert_count "scripts/verify_cesk_gc_formal.sh" "ThreadingEndToEndInterleaving.tla" "45"
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_classification_no_shift" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationRangesDisjoint is equal to FALSE" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_e1_legacy_default_ungated" >/dev/null
@@ -959,6 +970,14 @@ line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_dedicated_hando
 line_no "scripts/verify_cesk_gc_formal.sh" "DedicatedInlineFallbackHasRoots is equal to FALSE" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_dedicated_handoff_missing_reply" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "DedicatedCollectReplyProducerSafe is equal to FALSE" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_driver_channel_no_request_sender" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "DriverRequestReceiveHasProducer is equal to FALSE" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_driver_channel_missing_reply" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "DriverResponseWaitHasProducer is equal to FALSE" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_driver_channel_orphan_reply" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "DriverNoOrphanReplySend is equal to FALSE" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_driver_channel_fire_and_forget_wait" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "DriverFireAndForgetDoesNotWait is equal to FALSE" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveFanoutGateComplete" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "SchedulerClassificationRangesDisjoint" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "E1DefaultFlipSafe" >/dev/null
@@ -970,6 +989,11 @@ line_no "tla/ThreadingEndToEndInterleaving.tla" "E1SatbAbortPostsFreshStw" >/dev
 line_no "tla/ThreadingEndToEndInterleaving.tla" "DedicatedHandoffSafe" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "DedicatedInlineFallbackHasRoots" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "DedicatedCollectReplyProducerSafe" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "DriverChannelProtocolSafe" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "DriverRequestReceiveHasProducer" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "DriverResponseWaitHasProducer" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "DriverNoOrphanReplySend" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "DriverFireAndForgetDoesNotWait" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveFanoutAdmissionComplete" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "CollapseFanoutAdmissionComplete" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveTransducerDegreeMatches" >/dev/null

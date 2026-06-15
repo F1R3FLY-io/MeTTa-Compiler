@@ -400,6 +400,14 @@ run_tlc "threading_end_to_end_dedicated_handoff_inline_after_consumed" "Threadin
   fail "The invariant of DedicatedInlineFallbackHasRoots is equal to FALSE"
 run_tlc "threading_end_to_end_dedicated_handoff_missing_reply" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_dedicated_handoff_missing_reply.cfg" \
   fail "The invariant of DedicatedCollectReplyProducerSafe is equal to FALSE"
+run_tlc "threading_end_to_end_driver_channel_no_request_sender" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_driver_channel_no_request_sender.cfg" \
+  fail "The invariant of DriverRequestReceiveHasProducer is equal to FALSE"
+run_tlc "threading_end_to_end_driver_channel_missing_reply" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_driver_channel_missing_reply.cfg" \
+  fail "The invariant of DriverResponseWaitHasProducer is equal to FALSE"
+run_tlc "threading_end_to_end_driver_channel_orphan_reply" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_driver_channel_orphan_reply.cfg" \
+  fail "The invariant of DriverNoOrphanReplySend is equal to FALSE"
+run_tlc "threading_end_to_end_driver_channel_fire_and_forget_wait" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_driver_channel_fire_and_forget_wait.cfg" \
+  fail "The invariant of DriverFireAndForgetDoesNotWait is equal to FALSE"
 run_tlc "threading_end_to_end_active_fanout_missing_purity" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_active_fanout_missing_purity.cfg" \
   fail "The invariant of ActiveFanoutGateComplete is equal to FALSE"
 run_tlc "threading_end_to_end_active_fanout_missing_budget" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_active_fanout_missing_budget.cfg" \

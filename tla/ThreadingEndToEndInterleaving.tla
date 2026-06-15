@@ -49,6 +49,15 @@ CONSTANTS
     DedicatedReplyAttempted,
     DedicatedCollectionPanicked,
     DedicatedCollectionReturned,
+    DriverRequestSenderStored,
+    DriverRequestReceiverOwned,
+    DriverCollectSent,
+    DriverResponseSenderCarried,
+    DriverResponseReceiverOwned,
+    DriverReceivedCollect,
+    DriverReplyAttempted,
+    DriverCallerWaiting,
+    DriverFireAndForgetSent,
     IncludeWorkerRoot,
     IncludeDispatchRoot,
     IncludeBatchRoot,
@@ -264,6 +273,15 @@ BooleanConstantsOK ==
     /\ DedicatedReplyAttempted \in BOOLEAN
     /\ DedicatedCollectionPanicked \in BOOLEAN
     /\ DedicatedCollectionReturned \in BOOLEAN
+    /\ DriverRequestSenderStored \in BOOLEAN
+    /\ DriverRequestReceiverOwned \in BOOLEAN
+    /\ DriverCollectSent \in BOOLEAN
+    /\ DriverResponseSenderCarried \in BOOLEAN
+    /\ DriverResponseReceiverOwned \in BOOLEAN
+    /\ DriverReceivedCollect \in BOOLEAN
+    /\ DriverReplyAttempted \in BOOLEAN
+    /\ DriverCallerWaiting \in BOOLEAN
+    /\ DriverFireAndForgetSent \in BOOLEAN
     /\ IncludeWorkerRoot \in BOOLEAN
     /\ IncludeDispatchRoot \in BOOLEAN
     /\ IncludeBatchRoot \in BOOLEAN
@@ -494,6 +512,26 @@ DedicatedHandoffSafe ==
     /\ DedicatedResponseFailureSkipOnly
     /\ DedicatedCollectReplyProducerSafe
     /\ DedicatedCaughtResultStillReplies
+
+DriverRequestReceiveHasProducer ==
+    DriverReceivedCollect => DriverRequestSenderStored /\ DriverRequestReceiverOwned
+
+DriverResponseWaitHasProducer ==
+    DriverCallerWaiting /\ DriverReceivedCollect =>
+      DriverResponseSenderCarried /\ DriverResponseReceiverOwned /\ DriverReplyAttempted
+
+DriverNoOrphanReplySend ==
+    DriverReplyAttempted =>
+      DriverResponseSenderCarried /\ DriverResponseReceiverOwned /\ DriverCallerWaiting
+
+DriverFireAndForgetDoesNotWait ==
+    DriverFireAndForgetSent => ~DriverCallerWaiting /\ ~DriverReplyAttempted
+
+DriverChannelProtocolSafe ==
+    /\ DriverRequestReceiveHasProducer
+    /\ DriverResponseWaitHasProducer
+    /\ DriverNoOrphanReplySend
+    /\ DriverFireAndForgetDoesNotWait
 
 ConsumerWave ==
     IF EdgeComplete /\ (HasDependency \/ HasEffectConflict) THEN 1 ELSE 0
@@ -1343,6 +1381,7 @@ EndToEndSafe ==
     /\ E1DefaultFlipSafe
     /\ E1SatbStwDriverSafe
     /\ DedicatedHandoffSafe
+    /\ DriverChannelProtocolSafe
     /\ SchedulerWavefrontEdgesComplete
     /\ SchedulerDirectFanoutRefinesWavefront
     /\ ActiveFanoutGateComplete

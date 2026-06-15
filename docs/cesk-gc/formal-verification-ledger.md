@@ -1335,7 +1335,11 @@ facts the proofs rely on:
   depends on the same transition contract as the standalone cron model. The
   composed cron startup discriminator separately rejects a submitted startup
   task when neither `CheckEvents` nor `DrainChannel` polls the cron task channel.
-  Composed WorkPool discriminators
+  The composed spawn-latch proof now calls the standalone
+  `SchedulerSpawnLatch` latch-before-spawn theorem for the positive path and a
+  concrete standalone spawn-before-latch bad trace for the E2E negative
+  discriminator, so the mid-loop gate closure obligation is pinned to the same
+  proof surface as the standalone latch model.  Composed WorkPool discriminators
   reject lossy startup enqueue, missing inner task-panic heartbeat publication,
   and missing outer accounting-panic catch.  The envelope now also composes
   WorkPool overflow and lifecycle accounting: the E2E model rejects uncapped

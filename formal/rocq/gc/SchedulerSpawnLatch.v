@@ -80,18 +80,26 @@ Proof.
   - exact Hworker.
 Qed.
 
-Theorem spawn_before_latch_exposes_unlatched_worker :
-  exists tr,
-    worker_exists_at_check tr /\
-    midloop_gate_open_at_check True True 1 tr.
+Theorem concrete_spawn_before_latch_exposes_unlatched_worker :
+  worker_exists_at_check {| latch_at := 2; spawn_at := 0; check_at := 1 |} /\
+  midloop_gate_open_at_check True True 1
+    {| latch_at := 2; spawn_at := 0; check_at := 1 |}.
 Proof.
-  exists {| latch_at := 2; spawn_at := 0; check_at := 1 |}.
   split.
   - unfold worker_exists_at_check. simpl. lia.
   - unfold midloop_gate_open_at_check, latch_visible_at_check.
     simpl.
     repeat split.
     lia.
+Qed.
+
+Theorem spawn_before_latch_exposes_unlatched_worker :
+  exists tr,
+    worker_exists_at_check tr /\
+    midloop_gate_open_at_check True True 1 tr.
+Proof.
+  exists {| latch_at := 2; spawn_at := 0; check_at := 1 |}.
+  apply concrete_spawn_before_latch_exposes_unlatched_worker.
 Qed.
 
 End MeTTaTron_GC_SchedulerSpawnLatch.

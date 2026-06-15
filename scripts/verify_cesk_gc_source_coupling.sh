@@ -901,7 +901,15 @@ line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "end_to_end_safe_feeds_
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Collector.end_to_end_cesk_index_gc_safety" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Collector.ConcurrentFreshOnly" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Collector.PublishedSlotReady" >/dev/null
+line_no "formal/rocq/gc/SchedulerSpawnLatch.v" "Theorem concrete_spawn_before_latch_exposes_unlatched_worker" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module ActiveFanout :=" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module SpawnLatch :=" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "spawn_latch_order_blocks_midloop_gate_via_standalone" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "complete_spawn_latch_latch_before_spawn" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "complete_spawn_latch_blocks_midloop_gate_via_standalone" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "spawn_before_latch_unlatched_worker_via_standalone" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SpawnLatch.latch_before_spawn_blocks_worker_midloop_overlap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SpawnLatch.concrete_spawn_before_latch_exposes_unlatched_worker" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerDirectFanoutWavefrontRefinement" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerFanoutAdmissionCompleteness" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "CollapseFanoutAdmissionCompleteness" >/dev/null

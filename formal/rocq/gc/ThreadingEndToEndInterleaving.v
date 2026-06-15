@@ -59,6 +59,8 @@ Module CronRecurring :=
   MeTTaTron_GC_CronRecurringDispatch.
 Module CronStartup :=
   MeTTaTron_GC_CronStartupDelivery.
+Module SpawnLatch :=
+  MeTTaTron_GC_SchedulerSpawnLatch.
 Module ActiveFanout :=
   MeTTaTron_GC_SchedulerActiveFanoutGate.
 Module DirectRefinement :=
@@ -2335,26 +2337,64 @@ Section EndToEndModel.
        spawn_worker_at := 0;
        spawn_check_at := 1 |}.
 
+  Theorem spawn_latch_order_blocks_midloop_gate_via_standalone :
+    forall c,
+      latch_before_spawn (spawn_trace c) ->
+      worker_exists_at_check (spawn_trace c) ->
+      ~ midloop_gate_open_at_check True True 1 (spawn_trace c).
+  Proof.
+    intros c Hbefore Hworker.
+    exact
+      (SpawnLatch.latch_before_spawn_blocks_worker_midloop_overlap
+        (spawn_trace c)
+        True
+        True
+        1
+        Hbefore
+        Hworker).
+  Qed.
+
+  Theorem complete_spawn_latch_latch_before_spawn :
+    latch_before_spawn (spawn_trace complete_spawn_latch).
+  Proof.
+    unfold complete_spawn_latch, spawn_trace, latch_before_spawn.
+    simpl.
+    lia.
+  Qed.
+
+  Theorem complete_spawn_latch_blocks_midloop_gate_via_standalone :
+    worker_exists_at_check (spawn_trace complete_spawn_latch) ->
+    ~ midloop_gate_open_at_check True True 1
+        (spawn_trace complete_spawn_latch).
+  Proof.
+    apply spawn_latch_order_blocks_midloop_gate_via_standalone.
+    apply complete_spawn_latch_latch_before_spawn.
+  Qed.
+
+  Theorem spawn_before_latch_unlatched_worker_via_standalone :
+    worker_exists_at_check (spawn_trace spawn_before_latch) /\
+    midloop_gate_open_at_check True True 1 (spawn_trace spawn_before_latch).
+  Proof.
+    unfold spawn_before_latch, spawn_trace.
+    apply SpawnLatch.concrete_spawn_before_latch_exposes_unlatched_worker.
+  Qed.
+
   Theorem complete_spawn_latch_safe :
     spawn_latch_safe complete_spawn_latch.
   Proof.
-    unfold spawn_latch_safe, complete_spawn_latch, spawn_trace.
-    simpl.
+    unfold spawn_latch_safe.
     split.
-    - unfold latch_before_spawn. simpl. lia.
-    - intros Hworker.
-      apply latch_before_spawn_blocks_worker_midloop_overlap.
-      + unfold latch_before_spawn. simpl. lia.
-      + exact Hworker.
+    - apply complete_spawn_latch_latch_before_spawn.
+    - apply complete_spawn_latch_blocks_midloop_gate_via_standalone.
   Qed.
 
   Theorem spawn_before_latch_exposes_latch_gap :
     ~ spawn_latch_safe spawn_before_latch.
   Proof.
-    intros [Hbefore _].
-    unfold latch_before_spawn, spawn_trace, spawn_before_latch in Hbefore.
-    simpl in Hbefore.
-    lia.
+    intros [_ Hblocks].
+    destruct spawn_before_latch_unlatched_worker_via_standalone as
+      [Hworker Hgate].
+    exact (Hblocks Hworker Hgate).
   Qed.
 
   Record CronState : Type := {

@@ -285,7 +285,10 @@ The formal lane covers the main scheduler obligations:
   obligation requires each worker handoff to publish the sticky
   `worker_ever_spawned` latch before the worker can exist, so the single-threaded
   mid-loop index-GC gate cannot stay open after eval-worker parallelism becomes
-  possible.  The envelope also includes recurring-cron in-flight claims and cron
+  possible.  The Rocq E2E envelope now calls the standalone
+  `SchedulerSpawnLatch` theorem for the latch-before-spawn positive path and its
+  concrete spawn-before-latch counterexample for the negative path.  The envelope
+  also includes recurring-cron in-flight claims and cron
   startup delivery.  Its recurring-cron proof now bridges through the standalone
   `CronRecurringDispatch` theorems for dispatch claims, requeue-after-claim,
   stop-before-idle, and continue-without-stop redispatch.  A task submitted through the
@@ -743,6 +746,9 @@ the CESK collector capstone. That composition carries the threading proof into
 future-touch no-UAF, published-slot readiness, and concurrent-allocation versus
 exclusive-reuse disjointness. This is a proof composition over existing
 collector premises, so it does not add a new TLA state-machine surface.
+The spawn-latch bridge is also pinned in source coupling: the E2E proof must use
+`latch_before_spawn_blocks_worker_midloop_overlap`, and the negative E2E gap must
+use the standalone concrete spawn-before-latch bad trace.
 - `formal/rocq/gc/SchedulerSpawnLatch.v`
 - `tla/SchedulerSpawnLatch.tla`
 - `tla/MC_SchedulerSpawnLatch_all.cfg`

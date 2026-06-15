@@ -385,7 +385,9 @@ capped debug Robot replay after the conditional canary produced the expected fri
   been successfully sent to the GC thread, response-channel failure cannot justify an inline fallback because the
   mutator no longer owns those roots; failed sends still return the roots for inline fallback. It also proves the
   channel-liveness obligation from the static channel audit: a successful `Collect` handoff carries a per-request
-  response sender and the driver attempts a reply after catching the collection result.
+  response sender and the driver attempts a reply after catching the collection result. The threading E2E envelope
+  now imports this theorem directly through `DedicatedHandoffSafe`, rejecting both inline fallback after consumed
+  roots and consumed requests that omit a reply attempt.
 - `formal/rocq/gc/GcDriverChannelProtocol.v` plus `tla/GcDriverChannelProtocol.tla`: discharges the target-scope pgmcp
   channel audit findings for `gc_driver`. The proof/model split the channel obligation from root ownership: the
   spawn-created request sender is paired with the driver receiver; a successful synchronous `Collect` carries a
@@ -1243,14 +1245,16 @@ facts the proofs rely on:
   `SchedulerDirectFanoutWavefrontRefinement.v`,
   `SchedulerFanoutAdmissionCompleteness.v`,
   `CollapseFanoutAdmissionCompleteness.v`, `SchedulerFanoutProgress.v`, and
-  `SchedulerGcBoundary.v`, plus `E1DefaultConcurrentFlip.v` and
+  `SchedulerGcBoundary.v`, plus `DedicatedHandoff.v`,
+  `E1DefaultConcurrentFlip.v` and
   `E1SatbStwDriverProgress.v`: classification-table
   range disjointness, wavefront edge coverage, direct-fanout independent-wavefront
   refinement, admitted branch/collapse slot representation, FANOUT participant
   accounting, parked-worker resume, worker completion-drop accounting, the
   GC-facing scheduler root/admission boundary, and the E1 dedicated default-flip
   request/backstop boundary plus the SATB-success-or-fresh-STW driver release
-  boundary are part of the same end-to-end proof boundary.
+  boundary and dedicated root-vector ownership handoff are part of the same
+  end-to-end proof boundary.
   The Rocq envelope now also imports `CESKCollectorSafety.v` and proves
   `end_to_end_safe_feeds_cesk_index_gc_safety`: from `EndToEndSafe` it extracts
   the `gc_window_safe` scheduler-root premises, feeds them into
@@ -1279,7 +1283,12 @@ facts the proofs rely on:
   specifically on `E1FinalCycleRelease` when the success path does not clear
   witness/driver state, and on `E1SatbAbortPostsFreshStw` when abort does not
   post the fresh STW backstop, matching the shipped driver progress theorem
-  composed by `E1SatbStwDriverProgress`. The missing dependency-edge and effect-conflict-edge
+  composed by `E1SatbStwDriverProgress`. The dedicated-handoff E2E
+  discriminators fail specifically on `DedicatedInlineFallbackHasRoots` when a
+  sent/consumed root vector attempts inline fallback, and on
+  `DedicatedCollectReplyProducerSafe` when a consumed request omits the reply
+  attempt, matching the ownership/reply-producer theorem composed by
+  `DedicatedHandoff`. The missing dependency-edge and effect-conflict-edge
   E2E discriminators now fail specifically on `SchedulerWavefrontEdgesComplete`,
   and the partial
   direct-dispatch discriminator fails on

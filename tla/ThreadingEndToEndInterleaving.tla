@@ -38,6 +38,17 @@ CONSTANTS
     E1StwCycleClosed,
     E1WitnessCleared,
     E1GcInProgressReleased,
+    DedicatedSent,
+    DedicatedRootsAvailable,
+    DedicatedResponseFailed,
+    DedicatedReturnedErr,
+    DedicatedReturnedOkFalse,
+    DedicatedInlineFallback,
+    DedicatedResponseSenderCarried,
+    DedicatedHandlerRuns,
+    DedicatedReplyAttempted,
+    DedicatedCollectionPanicked,
+    DedicatedCollectionReturned,
     IncludeWorkerRoot,
     IncludeDispatchRoot,
     IncludeBatchRoot,
@@ -242,6 +253,17 @@ BooleanConstantsOK ==
     /\ E1StwCycleClosed \in BOOLEAN
     /\ E1WitnessCleared \in BOOLEAN
     /\ E1GcInProgressReleased \in BOOLEAN
+    /\ DedicatedSent \in BOOLEAN
+    /\ DedicatedRootsAvailable \in BOOLEAN
+    /\ DedicatedResponseFailed \in BOOLEAN
+    /\ DedicatedReturnedErr \in BOOLEAN
+    /\ DedicatedReturnedOkFalse \in BOOLEAN
+    /\ DedicatedInlineFallback \in BOOLEAN
+    /\ DedicatedResponseSenderCarried \in BOOLEAN
+    /\ DedicatedHandlerRuns \in BOOLEAN
+    /\ DedicatedReplyAttempted \in BOOLEAN
+    /\ DedicatedCollectionPanicked \in BOOLEAN
+    /\ DedicatedCollectionReturned \in BOOLEAN
     /\ IncludeWorkerRoot \in BOOLEAN
     /\ IncludeDispatchRoot \in BOOLEAN
     /\ IncludeBatchRoot \in BOOLEAN
@@ -446,6 +468,32 @@ E1SatbStwDriverSafe ==
     /\ E1StwBackstopCloses
     /\ E1FinalCycleRelease
     /\ E1StwCycleRelease
+
+DedicatedSentConsumesRoots ==
+    DedicatedSent => ~DedicatedRootsAvailable
+
+DedicatedInlineFallbackHasRoots ==
+    DedicatedInlineFallback => DedicatedRootsAvailable
+
+DedicatedResponseFailureSkipOnly ==
+    DedicatedSent /\ DedicatedResponseFailed =>
+      DedicatedReturnedOkFalse /\ ~DedicatedReturnedErr /\ ~DedicatedInlineFallback
+
+DedicatedCollectReplyProducerSafe ==
+    DedicatedSent =>
+      DedicatedResponseSenderCarried /\ DedicatedHandlerRuns /\ DedicatedReplyAttempted
+
+DedicatedCaughtResultStillReplies ==
+    DedicatedSent /\ DedicatedHandlerRuns /\
+      (DedicatedCollectionPanicked \/ DedicatedCollectionReturned) =>
+        DedicatedReplyAttempted
+
+DedicatedHandoffSafe ==
+    /\ DedicatedSentConsumesRoots
+    /\ DedicatedInlineFallbackHasRoots
+    /\ DedicatedResponseFailureSkipOnly
+    /\ DedicatedCollectReplyProducerSafe
+    /\ DedicatedCaughtResultStillReplies
 
 ConsumerWave ==
     IF EdgeComplete /\ (HasDependency \/ HasEffectConflict) THEN 1 ELSE 0
@@ -1294,6 +1342,7 @@ EndToEndSafe ==
     /\ SchedulerClassificationRangesDisjoint
     /\ E1DefaultFlipSafe
     /\ E1SatbStwDriverSafe
+    /\ DedicatedHandoffSafe
     /\ SchedulerWavefrontEdgesComplete
     /\ SchedulerDirectFanoutRefinesWavefront
     /\ ActiveFanoutGateComplete

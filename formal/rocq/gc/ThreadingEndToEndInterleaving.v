@@ -15,6 +15,7 @@ Require Import CronRecurringDispatch.
 Require Import CronStartupDelivery.
 Require Import CESKCollectorSafety.
 Require Import CollapseFanoutAdmissionCompleteness.
+Require Import DedicatedHandoff.
 Require Import E1DefaultConcurrentFlip.
 Require Import E1SatbStwDriverProgress.
 Require Import SchedulerActiveFanoutGate.
@@ -63,6 +64,8 @@ Module Classification :=
   MeTTaTron_GC_SchedulerClassificationLookup.
 Module Collector :=
   MeTTaTron_GC_CESKCollectorSafety.
+Module Dedicated :=
+  MeTTaTron_GC_DedicatedHandoff.
 Module E1Default :=
   MeTTaTron_GC_E1DefaultConcurrentFlip.
 Module E1Driver :=
@@ -618,6 +621,232 @@ Section EndToEndModel.
       missing_e1_satb_abort_stw_backstop_driver in Habort_posts.
     simpl in Habort_posts.
     exact (Habort_posts I).
+  Qed.
+
+  Record DedicatedHandoffConfig : Type := {
+    dedicated_sent : Prop;
+    dedicated_roots_available : Prop;
+    dedicated_response_failed : Prop;
+    dedicated_returned_err : Prop;
+    dedicated_returned_ok_false : Prop;
+    dedicated_inline_fallback : Prop;
+    dedicated_response_sender_carried : Prop;
+    dedicated_handler_runs : Prop;
+    dedicated_reply_attempted : Prop;
+    dedicated_collection_panicked : Prop;
+    dedicated_collection_returned : Prop
+  }.
+
+  Definition dedicated_inline_fallback_safe
+      (c : DedicatedHandoffConfig)
+      : Prop :=
+    Dedicated.InlineFallbackSafe
+      (dedicated_inline_fallback c)
+      (dedicated_roots_available c).
+
+  Definition dedicated_response_failure_skip_safe
+      (c : DedicatedHandoffConfig)
+      : Prop :=
+    dedicated_response_failed c -> dedicated_returned_ok_false c.
+
+  Definition dedicated_skip_is_not_error
+      (c : DedicatedHandoffConfig)
+      : Prop :=
+    dedicated_returned_ok_false c -> ~ dedicated_returned_err c.
+
+  Definition dedicated_inline_fallback_is_error
+      (c : DedicatedHandoffConfig)
+      : Prop :=
+    dedicated_inline_fallback c -> dedicated_returned_err c.
+
+  Definition dedicated_sent_consumes_roots
+      (c : DedicatedHandoffConfig)
+      : Prop :=
+    dedicated_sent c -> ~ dedicated_roots_available c.
+
+  Definition dedicated_collect_reply_producer_safe
+      (c : DedicatedHandoffConfig)
+      : Prop :=
+    Dedicated.CollectReplyProducerSafe
+      (dedicated_sent c)
+      (dedicated_response_sender_carried c)
+      (dedicated_handler_runs c)
+      (dedicated_reply_attempted c).
+
+  Definition dedicated_handler_catches_collection_result
+      (c : DedicatedHandoffConfig)
+      : Prop :=
+    dedicated_handler_runs c ->
+    dedicated_collection_panicked c \/ dedicated_collection_returned c.
+
+  Definition dedicated_handoff_safe
+      (c : DedicatedHandoffConfig)
+      : Prop :=
+    dedicated_sent_consumes_roots c /\
+    dedicated_inline_fallback_safe c /\
+    dedicated_response_failure_skip_safe c /\
+    dedicated_skip_is_not_error c /\
+    dedicated_inline_fallback_is_error c /\
+    dedicated_collect_reply_producer_safe c /\
+    dedicated_handler_catches_collection_result c.
+
+  Definition complete_dedicated_handoff : DedicatedHandoffConfig :=
+    {| dedicated_sent := True;
+       dedicated_roots_available := False;
+       dedicated_response_failed := False;
+       dedicated_returned_err := False;
+       dedicated_returned_ok_false := False;
+       dedicated_inline_fallback := False;
+       dedicated_response_sender_carried := True;
+       dedicated_handler_runs := True;
+       dedicated_reply_attempted := True;
+       dedicated_collection_panicked := False;
+       dedicated_collection_returned := True |}.
+
+  Definition inline_after_consumed_dedicated_handoff
+      : DedicatedHandoffConfig :=
+    {| dedicated_sent := True;
+       dedicated_roots_available := False;
+       dedicated_response_failed := True;
+       dedicated_returned_err := True;
+       dedicated_returned_ok_false := False;
+       dedicated_inline_fallback := True;
+       dedicated_response_sender_carried := True;
+       dedicated_handler_runs := True;
+       dedicated_reply_attempted := True;
+       dedicated_collection_panicked := False;
+       dedicated_collection_returned := True |}.
+
+  Definition missing_reply_dedicated_handoff : DedicatedHandoffConfig :=
+    {| dedicated_sent := True;
+       dedicated_roots_available := False;
+       dedicated_response_failed := False;
+       dedicated_returned_err := False;
+       dedicated_returned_ok_false := False;
+       dedicated_inline_fallback := False;
+       dedicated_response_sender_carried := True;
+       dedicated_handler_runs := True;
+       dedicated_reply_attempted := False;
+       dedicated_collection_panicked := False;
+       dedicated_collection_returned := True |}.
+
+  Theorem complete_dedicated_handoff_safe :
+    dedicated_handoff_safe complete_dedicated_handoff.
+  Proof.
+    unfold dedicated_handoff_safe, dedicated_sent_consumes_roots,
+      dedicated_inline_fallback_safe, dedicated_response_failure_skip_safe,
+      dedicated_skip_is_not_error, dedicated_inline_fallback_is_error,
+      dedicated_collect_reply_producer_safe,
+      dedicated_handler_catches_collection_result,
+      complete_dedicated_handoff.
+    simpl.
+    repeat split.
+    - intros _ Hroots.
+      exact Hroots.
+    - intros Hinline.
+      exact Hinline.
+    - intros Hfailed.
+      exact Hfailed.
+    - intros _ Herr.
+      exact Herr.
+    - intros Hinline.
+      exact Hinline.
+    - intros _.
+      right.
+      exact I.
+  Qed.
+
+  Theorem dedicated_handoff_safe_forbids_inline_after_consumed_roots :
+    forall c,
+      dedicated_handoff_safe c ->
+      dedicated_sent c ->
+      ~ dedicated_inline_fallback c.
+  Proof.
+    intros c Hsafe Hsent.
+    unfold dedicated_handoff_safe in Hsafe.
+    destruct Hsafe as [Hsent_consumes [Hinline_safe _]].
+    eapply Dedicated.consumed_roots_forbid_inline_fallback.
+    - exact Hsent_consumes.
+    - exact Hinline_safe.
+    - exact Hsent.
+  Qed.
+
+  Theorem dedicated_handoff_response_failure_after_send_skip_only :
+    forall c,
+      dedicated_handoff_safe c ->
+      dedicated_sent c ->
+      dedicated_response_failed c ->
+      ~ dedicated_inline_fallback c.
+  Proof.
+    intros c Hsafe Hsent Hfailed.
+    unfold dedicated_handoff_safe in Hsafe.
+    destruct Hsafe as
+      [Hsent_consumes [_ [Hfailed_ok [Hok_not_err
+        [Hinline_err _]]]]].
+    eapply Dedicated.response_failure_after_send_is_skip_only.
+    - exact Hsent_consumes.
+    - exact Hfailed_ok.
+    - exact Hok_not_err.
+    - exact Hinline_err.
+    - exact Hsent.
+    - exact Hfailed.
+  Qed.
+
+  Theorem dedicated_handoff_safe_has_reply_producer :
+    forall c,
+      dedicated_handoff_safe c ->
+      dedicated_sent c ->
+      dedicated_response_sender_carried c /\
+      dedicated_handler_runs c /\
+      dedicated_reply_attempted c.
+  Proof.
+    intros c Hsafe Hsent.
+    unfold dedicated_handoff_safe in Hsafe.
+    destruct Hsafe as [_ [_ [_ [_ [_ [Hreply _]]]]]].
+    apply Hreply.
+    exact Hsent.
+  Qed.
+
+  Theorem dedicated_handoff_caught_result_still_replies :
+    forall c,
+      dedicated_handoff_safe c ->
+      dedicated_sent c ->
+      dedicated_reply_attempted c.
+  Proof.
+    intros c Hsafe Hsent.
+    unfold dedicated_handoff_safe,
+      dedicated_collect_reply_producer_safe in Hsafe.
+    destruct Hsafe as [_ [_ [_ [_ [_ [Hreply Hcaught]]]]]].
+    eapply Dedicated.caught_collection_result_still_replies.
+    - intros _.
+      destruct (Hreply Hsent) as [_ [Hhandler _]].
+      exact Hhandler.
+    - exact Hcaught.
+    - intros _.
+      destruct (Hreply Hsent) as [_ [_ Hattempted]].
+      exact Hattempted.
+    - exact Hsent.
+  Qed.
+
+  Theorem inline_after_consumed_exposes_dedicated_handoff_gap :
+    ~ dedicated_handoff_safe inline_after_consumed_dedicated_handoff.
+  Proof.
+    intros [_ [Hinline_safe _]].
+    unfold dedicated_inline_fallback_safe,
+      inline_after_consumed_dedicated_handoff in Hinline_safe.
+    simpl in Hinline_safe.
+    exact (Hinline_safe I).
+  Qed.
+
+  Theorem missing_reply_exposes_dedicated_handoff_gap :
+    ~ dedicated_handoff_safe missing_reply_dedicated_handoff.
+  Proof.
+    intros [_ [_ [_ [_ [_ [Hreply _]]]]]].
+    unfold dedicated_collect_reply_producer_safe,
+      missing_reply_dedicated_handoff in Hreply.
+    simpl in Hreply.
+    destruct (Hreply I) as [_ [_ Hattempted]].
+    exact Hattempted.
   Qed.
 
   Definition WaveAssignment : Type := Task -> nat.
@@ -2739,6 +2968,7 @@ Section EndToEndModel.
       (classification_lookup : ClassificationLookupConfig)
       (e1_default_flip : E1DefaultFlipConfig)
       (e1_satb_stw_driver : E1SatbStwDriverConfig)
+      (dedicated_handoff : DedicatedHandoffConfig)
       : Prop :=
     schedule_envelope_safe w wave /\
     gc_window_safe
@@ -2759,7 +2989,8 @@ Section EndToEndModel.
       late_worker_live /\
     classification_lookup_safe classification_lookup /\
     e1_default_flip_safe e1_default_flip /\
-    e1_satb_stw_driver_safe e1_satb_stw_driver.
+    e1_satb_stw_driver_safe e1_satb_stw_driver /\
+    dedicated_handoff_safe dedicated_handoff.
 
   Theorem end_to_end_safe_implies_gc_window_safe :
     forall w wave
@@ -2769,7 +3000,7 @@ Section EndToEndModel.
       late_worker_live
       spawn_latch cron_state cron_startup work_pool active_fanout
       fanout_progress classification_lookup e1_default_flip
-      e1_satb_stw_driver,
+      e1_satb_stw_driver dedicated_handoff,
       end_to_end_safe
         w wave
         active_worker_live worker_rooted
@@ -2778,7 +3009,7 @@ Section EndToEndModel.
         late_worker_live
         spawn_latch cron_state cron_startup work_pool active_fanout
         fanout_progress classification_lookup e1_default_flip
-        e1_satb_stw_driver ->
+        e1_satb_stw_driver dedicated_handoff ->
       gc_window_safe
         active_worker_live worker_rooted
         dispatch_live dispatch_rooted
@@ -2788,7 +3019,8 @@ Section EndToEndModel.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live spawn_latch cron_state
       cron_startup work_pool active_fanout fanout_progress
-      classification_lookup e1_default_flip e1_satb_stw_driver Hend.
+      classification_lookup e1_default_flip e1_satb_stw_driver
+      dedicated_handoff Hend.
     unfold end_to_end_safe in Hend.
     exact (proj1 (proj2 Hend)).
   Qed.
@@ -2801,7 +3033,7 @@ Section EndToEndModel.
       late_worker_live
       spawn_latch cron_state cron_startup work_pool active_fanout
       fanout_progress classification_lookup e1_default_flip
-      e1_satb_stw_driver
+      e1_satb_stw_driver dedicated_handoff
       (StructuralRoot WorkerRoot SafepointRoot EnvAnchor DispatchAnchor
        InitialRoot ShadedDeletion AllocateBlack PublishedAlloc SegmentWritten
        SegmentPublished SlotWritten SlotPublished AddrReturned ReadObserved
@@ -2817,7 +3049,7 @@ Section EndToEndModel.
         late_worker_live
         spawn_latch cron_state cron_startup work_pool active_fanout
         fanout_progress classification_lookup e1_default_flip
-        e1_satb_stw_driver ->
+        e1_satb_stw_driver dedicated_handoff ->
       (forall a,
           FutureTouch a ->
           @Collector.Reach BoundaryAddr
@@ -2888,7 +3120,7 @@ Section EndToEndModel.
       dispatch_rooted batch_live batch_rooted late_worker_live spawn_latch
       cron_state cron_startup work_pool active_fanout fanout_progress
       classification_lookup e1_default_flip e1_satb_stw_driver
-      StructuralRoot WorkerRoot
+      dedicated_handoff StructuralRoot WorkerRoot
       SafepointRoot EnvAnchor DispatchAnchor InitialRoot ShadedDeletion
       AllocateBlack PublishedAlloc SegmentWritten SegmentPublished SlotWritten
       SlotPublished AddrReturned ReadObserved ConcurrentReturned ReuseReturned
@@ -2906,7 +3138,7 @@ Section EndToEndModel.
         late_worker_live
         spawn_latch cron_state cron_startup work_pool active_fanout
         fanout_progress classification_lookup e1_default_flip
-        e1_satb_stw_driver Hend)
+        e1_satb_stw_driver dedicated_handoff Hend)
       as Hgc_window.
     destruct
       (gc_window_safe_exports_boundary_driver_roots
@@ -2942,7 +3174,8 @@ Section EndToEndModel.
         complete_fanout_progress
         complete_classification_lookup
         complete_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live Hschedule.
     unfold end_to_end_safe.
@@ -2970,7 +3203,9 @@ Section EndToEndModel.
                              - apply complete_classification_lookup_safe.
                              - split.
                                + apply complete_e1_default_flip_safe.
-                               + apply complete_e1_satb_stw_driver_safe. }
+                               + split.
+                                 * apply complete_e1_satb_stw_driver_safe.
+                                 * apply complete_dedicated_handoff_safe. }
   Qed.
 
   Theorem no_shift_classification_lookup_exposes_end_to_end_gap :
@@ -2996,7 +3231,8 @@ Section EndToEndModel.
           complete_fanout_progress
           no_shift_classification_lookup
           complete_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -3028,7 +3264,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           legacy_default_ungated_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -3059,7 +3296,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           trigger_failure_missing_backstop_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -3090,7 +3328,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           complete_e1_default_flip
-          missing_e1_satb_success_release_driver.
+          missing_e1_satb_success_release_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -3121,11 +3360,76 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           complete_e1_default_flip
-          missing_e1_satb_abort_stw_backstop_driver.
+          missing_e1_satb_abort_stw_backstop_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
     apply missing_e1_satb_abort_stw_backstop_exposes_driver_gap.
+    tauto.
+  Qed.
+
+  Theorem inline_after_consumed_dedicated_handoff_exposes_end_to_end_gap :
+    forall w wave active_worker_live,
+      schedule_envelope_safe w wave ->
+      ~ end_to_end_safe
+          w
+          wave
+          active_worker_live
+          active_worker_live
+          true
+          true
+          true
+          true
+          false
+          complete_spawn_latch
+          (cron_final_due
+            (cron_worker_complete true
+              (cron_second_due (cron_first_due true))))
+          complete_startup
+          complete_work_pool
+          complete_active_fanout
+          complete_fanout_progress
+          complete_classification_lookup
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver
+          inline_after_consumed_dedicated_handoff.
+  Proof.
+    intros w wave active_worker_live Hschedule Hend.
+    unfold end_to_end_safe in Hend.
+    apply inline_after_consumed_exposes_dedicated_handoff_gap.
+    tauto.
+  Qed.
+
+  Theorem missing_reply_dedicated_handoff_exposes_end_to_end_gap :
+    forall w wave active_worker_live,
+      schedule_envelope_safe w wave ->
+      ~ end_to_end_safe
+          w
+          wave
+          active_worker_live
+          active_worker_live
+          true
+          true
+          true
+          true
+          false
+          complete_spawn_latch
+          (cron_final_due
+            (cron_worker_complete true
+              (cron_second_due (cron_first_due true))))
+          complete_startup
+          complete_work_pool
+          complete_active_fanout
+          complete_fanout_progress
+          complete_classification_lookup
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver
+          missing_reply_dedicated_handoff.
+  Proof.
+    intros w wave active_worker_live Hschedule Hend.
+    unfold end_to_end_safe in Hend.
+    apply missing_reply_exposes_dedicated_handoff_gap.
     tauto.
   Qed.
 
@@ -3158,7 +3462,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           complete_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state Hschedule Hgc Hcron
@@ -3201,7 +3506,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           complete_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_startup work_pool
@@ -3245,7 +3551,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           complete_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3279,7 +3586,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           complete_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave cron_state cron_startup work_pool Hschedule Hcron Hstartup
       Hwork_pool Hend.
@@ -3313,7 +3621,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           complete_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave cron_state cron_startup work_pool Hschedule Hcron Hstartup
       Hwork_pool Hend.
@@ -3353,7 +3662,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           complete_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
@@ -3393,7 +3703,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           complete_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
@@ -3433,7 +3744,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           complete_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
@@ -3475,7 +3787,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           complete_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3506,7 +3819,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           complete_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -3536,7 +3850,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           complete_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -3566,7 +3881,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           complete_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -3596,7 +3912,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           complete_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -3638,7 +3955,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           complete_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3683,7 +4001,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           complete_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3716,7 +4035,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           complete_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3747,7 +4067,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           complete_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3778,7 +4099,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           complete_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3809,7 +4131,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           complete_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3840,7 +4163,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           complete_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3871,7 +4195,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           complete_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3902,7 +4227,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           complete_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3933,7 +4259,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           complete_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3964,7 +4291,8 @@ Section EndToEndModel.
           complete_fanout_progress
           complete_classification_lookup
           complete_e1_default_flip
-          complete_e1_satb_stw_driver.
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool

@@ -396,6 +396,10 @@ run_tlc "threading_end_to_end_e1_satb_success_missing_release" "ThreadingEndToEn
   fail "The invariant of E1FinalCycleRelease is equal to FALSE"
 run_tlc "threading_end_to_end_e1_satb_abort_missing_stw" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_e1_satb_abort_missing_stw.cfg" \
   fail "The invariant of E1SatbAbortPostsFreshStw is equal to FALSE"
+run_tlc "threading_end_to_end_dedicated_handoff_inline_after_consumed" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_dedicated_handoff_inline_after_consumed.cfg" \
+  fail "The invariant of DedicatedInlineFallbackHasRoots is equal to FALSE"
+run_tlc "threading_end_to_end_dedicated_handoff_missing_reply" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_dedicated_handoff_missing_reply.cfg" \
+  fail "The invariant of DedicatedCollectReplyProducerSafe is equal to FALSE"
 run_tlc "threading_end_to_end_active_fanout_missing_purity" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_active_fanout_missing_purity.cfg" \
   fail "The invariant of ActiveFanoutGateComplete is equal to FALSE"
 run_tlc "threading_end_to_end_active_fanout_missing_budget" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_active_fanout_missing_budget.cfg" \

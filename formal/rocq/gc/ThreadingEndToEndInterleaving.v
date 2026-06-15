@@ -20,6 +20,7 @@ Require Import E1DefaultConcurrentFlip.
 Require Import E1SatbStwDriverProgress.
 Require Import GcDriverChannelProtocol.
 Require Import KSpineCurrentWork.
+Require Import VmNestedLocals.
 Require Import SchedulerActiveFanoutGate.
 Require Import SchedulerClassificationLookup.
 Require Import SchedulerDirectFanoutWavefrontRefinement.
@@ -72,6 +73,8 @@ Module DriverChannel :=
   MeTTaTron_GC_GcDriverChannelProtocol.
 Module KSpine :=
   MeTTaTron_GC_KSpineCurrentWork.
+Module VmNested :=
+  MeTTaTron_GC_VmNestedLocals.
 Module E1Default :=
   MeTTaTron_GC_E1DefaultConcurrentFlip.
 Module E1Driver :=
@@ -1386,6 +1389,240 @@ Section EndToEndModel.
     - discriminate Hneq.
     - discriminate Hneq.
     - discriminate Hfalse.
+  Qed.
+
+  Record VmNestedLocalsConfig : Type := {
+    vm_nested_pre_eval_rooted : bool;
+    vm_nested_dispatch_rhs_rooted : bool;
+    vm_nested_rule_matches_rooted : bool;
+    vm_nested_saved_bindings_rooted : bool;
+    vm_nested_combos_rooted : bool;
+    vm_nested_outcomes_rooted : bool
+  }.
+
+  Definition vm_nested_class_live
+      (_ : VmNested.VmLocalClass)
+      (_ : unit)
+      : Prop :=
+    True.
+
+  Definition vm_nested_class_included
+      (c : VmNestedLocalsConfig)
+      (class : VmNested.VmLocalClass)
+      : bool :=
+    match class with
+    | VmNested.PreEvalExpr
+    | VmNested.PreEvalItem
+    | VmNested.PreEvalResult =>
+        vm_nested_pre_eval_rooted c
+    | VmNested.DispatchRhs =>
+        vm_nested_dispatch_rhs_rooted c
+    | VmNested.RuleMatchRhs
+    | VmNested.RuleMatchTemplate
+    | VmNested.RuleMatchBinding =>
+        vm_nested_rule_matches_rooted c
+    | VmNested.SavedBinding =>
+        vm_nested_saved_bindings_rooted c
+    | VmNested.ComboExpr
+    | VmNested.ComboBinding =>
+        vm_nested_combos_rooted c
+    | VmNested.AccumulatedOutcome =>
+        vm_nested_outcomes_rooted c
+    end.
+
+  Definition vm_nested_class_root
+      (c : VmNestedLocalsConfig)
+      (class : VmNested.VmLocalClass)
+      (_ : unit)
+      : Prop :=
+    vm_nested_class_included c class = true.
+
+  Definition vm_nested_live_local
+      (addr : unit)
+      : Prop :=
+    @VmNested.VmNestedLocal unit vm_nested_class_live addr.
+
+  Definition vm_nested_k_spine_root
+      (c : VmNestedLocalsConfig)
+      (addr : unit)
+      : Prop :=
+    @VmNested.VmNestedLocal unit (vm_nested_class_root c) addr.
+
+  Definition vm_nested_freed
+      (c : VmNestedLocalsConfig)
+      (addr : unit)
+      : Prop :=
+    vm_nested_live_local addr /\ ~ vm_nested_k_spine_root c addr.
+
+  Definition vm_nested_all_classes_rooted
+      (c : VmNestedLocalsConfig)
+      : Prop :=
+    forall class, vm_nested_class_included c class = true.
+
+  Definition vm_nested_no_live_local_freed
+      (c : VmNestedLocalsConfig)
+      : Prop :=
+    forall addr,
+      vm_nested_live_local addr ->
+      ~ vm_nested_freed c addr.
+
+  Definition vm_nested_locals_safe
+      (c : VmNestedLocalsConfig)
+      : Prop :=
+    vm_nested_all_classes_rooted c /\
+    vm_nested_no_live_local_freed c.
+
+  Definition complete_vm_nested_locals : VmNestedLocalsConfig :=
+    {| vm_nested_pre_eval_rooted := true;
+       vm_nested_dispatch_rhs_rooted := true;
+       vm_nested_rule_matches_rooted := true;
+       vm_nested_saved_bindings_rooted := true;
+       vm_nested_combos_rooted := true;
+       vm_nested_outcomes_rooted := true |}.
+
+  Definition missing_pre_eval_vm_nested_locals : VmNestedLocalsConfig :=
+    {| vm_nested_pre_eval_rooted := false;
+       vm_nested_dispatch_rhs_rooted := true;
+       vm_nested_rule_matches_rooted := true;
+       vm_nested_saved_bindings_rooted := true;
+       vm_nested_combos_rooted := true;
+       vm_nested_outcomes_rooted := true |}.
+
+  Definition missing_dispatch_rhs_vm_nested_locals : VmNestedLocalsConfig :=
+    {| vm_nested_pre_eval_rooted := true;
+       vm_nested_dispatch_rhs_rooted := false;
+       vm_nested_rule_matches_rooted := true;
+       vm_nested_saved_bindings_rooted := true;
+       vm_nested_combos_rooted := true;
+       vm_nested_outcomes_rooted := true |}.
+
+  Definition missing_rule_matches_vm_nested_locals : VmNestedLocalsConfig :=
+    {| vm_nested_pre_eval_rooted := true;
+       vm_nested_dispatch_rhs_rooted := true;
+       vm_nested_rule_matches_rooted := false;
+       vm_nested_saved_bindings_rooted := true;
+       vm_nested_combos_rooted := true;
+       vm_nested_outcomes_rooted := true |}.
+
+  Definition missing_saved_bindings_vm_nested_locals : VmNestedLocalsConfig :=
+    {| vm_nested_pre_eval_rooted := true;
+       vm_nested_dispatch_rhs_rooted := true;
+       vm_nested_rule_matches_rooted := true;
+       vm_nested_saved_bindings_rooted := false;
+       vm_nested_combos_rooted := true;
+       vm_nested_outcomes_rooted := true |}.
+
+  Definition missing_combos_vm_nested_locals : VmNestedLocalsConfig :=
+    {| vm_nested_pre_eval_rooted := true;
+       vm_nested_dispatch_rhs_rooted := true;
+       vm_nested_rule_matches_rooted := true;
+       vm_nested_saved_bindings_rooted := true;
+       vm_nested_combos_rooted := false;
+       vm_nested_outcomes_rooted := true |}.
+
+  Definition missing_outcomes_vm_nested_locals : VmNestedLocalsConfig :=
+    {| vm_nested_pre_eval_rooted := true;
+       vm_nested_dispatch_rhs_rooted := true;
+       vm_nested_rule_matches_rooted := true;
+       vm_nested_saved_bindings_rooted := true;
+       vm_nested_combos_rooted := true;
+       vm_nested_outcomes_rooted := false |}.
+
+  Theorem vm_nested_local_root_contract_survives_collection :
+    forall c,
+      vm_nested_all_classes_rooted c ->
+      vm_nested_no_live_local_freed c.
+  Proof.
+    intros c Hclasses addr Hlocal.
+    eapply (@VmNested.vm_nested_local_survives_collection
+      unit
+      vm_nested_class_live
+      (vm_nested_k_spine_root c)
+      (vm_nested_k_spine_root c)
+      (vm_nested_freed c)).
+    - intros class local_addr _.
+      exists class.
+      unfold vm_nested_class_root.
+      apply Hclasses.
+    - intros local_addr Hrooted. exact Hrooted.
+    - intros local_addr Hfreed Hrooted.
+      exact (proj2 Hfreed Hrooted).
+    - exact Hlocal.
+  Qed.
+
+  Theorem complete_vm_nested_locals_safe :
+    vm_nested_locals_safe complete_vm_nested_locals.
+  Proof.
+    unfold vm_nested_locals_safe.
+    split.
+    - intros class.
+      destruct class; reflexivity.
+    - apply vm_nested_local_root_contract_survives_collection.
+      intros class.
+      destruct class; reflexivity.
+  Qed.
+
+  Theorem vm_nested_locals_safe_exports_no_live_free :
+    forall c,
+      vm_nested_locals_safe c ->
+      vm_nested_no_live_local_freed c.
+  Proof.
+    intros c [_ Hnofree].
+    exact Hnofree.
+  Qed.
+
+  Theorem missing_pre_eval_exposes_vm_nested_locals_gap :
+    ~ vm_nested_locals_safe missing_pre_eval_vm_nested_locals.
+  Proof.
+    intros [Hclasses _].
+    specialize (Hclasses VmNested.PreEvalExpr).
+    simpl in Hclasses.
+    discriminate Hclasses.
+  Qed.
+
+  Theorem missing_dispatch_rhs_exposes_vm_nested_locals_gap :
+    ~ vm_nested_locals_safe missing_dispatch_rhs_vm_nested_locals.
+  Proof.
+    intros [Hclasses _].
+    specialize (Hclasses VmNested.DispatchRhs).
+    simpl in Hclasses.
+    discriminate Hclasses.
+  Qed.
+
+  Theorem missing_rule_matches_exposes_vm_nested_locals_gap :
+    ~ vm_nested_locals_safe missing_rule_matches_vm_nested_locals.
+  Proof.
+    intros [Hclasses _].
+    specialize (Hclasses VmNested.RuleMatchRhs).
+    simpl in Hclasses.
+    discriminate Hclasses.
+  Qed.
+
+  Theorem missing_saved_bindings_exposes_vm_nested_locals_gap :
+    ~ vm_nested_locals_safe missing_saved_bindings_vm_nested_locals.
+  Proof.
+    intros [Hclasses _].
+    specialize (Hclasses VmNested.SavedBinding).
+    simpl in Hclasses.
+    discriminate Hclasses.
+  Qed.
+
+  Theorem missing_combos_exposes_vm_nested_locals_gap :
+    ~ vm_nested_locals_safe missing_combos_vm_nested_locals.
+  Proof.
+    intros [Hclasses _].
+    specialize (Hclasses VmNested.ComboExpr).
+    simpl in Hclasses.
+    discriminate Hclasses.
+  Qed.
+
+  Theorem missing_outcomes_exposes_vm_nested_locals_gap :
+    ~ vm_nested_locals_safe missing_outcomes_vm_nested_locals.
+  Proof.
+    intros [Hclasses _].
+    specialize (Hclasses VmNested.AccumulatedOutcome).
+    simpl in Hclasses.
+    discriminate Hclasses.
   Qed.
 
   Definition WaveAssignment : Type := Task -> nat.
@@ -3510,6 +3747,7 @@ Section EndToEndModel.
       (dedicated_handoff : DedicatedHandoffConfig)
       (driver_channel : DriverChannelConfig)
       (k_spine_current_work : KSpineCurrentWorkConfig)
+      (vm_nested_locals : VmNestedLocalsConfig)
       : Prop :=
     schedule_envelope_safe w wave /\
     gc_window_safe
@@ -3533,7 +3771,8 @@ Section EndToEndModel.
     e1_satb_stw_driver_safe e1_satb_stw_driver /\
     dedicated_handoff_safe dedicated_handoff /\
     driver_channel_protocol_safe driver_channel /\
-    k_spine_current_work_safe k_spine_current_work.
+    k_spine_current_work_safe k_spine_current_work /\
+    vm_nested_locals_safe vm_nested_locals.
 
   Theorem end_to_end_safe_implies_gc_window_safe :
     forall w wave
@@ -3543,7 +3782,8 @@ Section EndToEndModel.
       late_worker_live
       spawn_latch cron_state cron_startup work_pool active_fanout
       fanout_progress classification_lookup e1_default_flip
-      e1_satb_stw_driver dedicated_handoff driver_channel k_spine_current_work,
+      e1_satb_stw_driver dedicated_handoff driver_channel k_spine_current_work
+      vm_nested_locals,
       end_to_end_safe
         w wave
         active_worker_live worker_rooted
@@ -3553,7 +3793,7 @@ Section EndToEndModel.
         spawn_latch cron_state cron_startup work_pool active_fanout
         fanout_progress classification_lookup e1_default_flip
         e1_satb_stw_driver dedicated_handoff driver_channel
-        k_spine_current_work ->
+        k_spine_current_work vm_nested_locals ->
       gc_window_safe
         active_worker_live worker_rooted
         dispatch_live dispatch_rooted
@@ -3564,7 +3804,8 @@ Section EndToEndModel.
       batch_live batch_rooted late_worker_live spawn_latch cron_state
       cron_startup work_pool active_fanout fanout_progress
       classification_lookup e1_default_flip e1_satb_stw_driver
-      dedicated_handoff driver_channel k_spine_current_work Hend.
+      dedicated_handoff driver_channel k_spine_current_work vm_nested_locals
+      Hend.
     unfold end_to_end_safe in Hend.
     exact (proj1 (proj2 Hend)).
   Qed.
@@ -3578,6 +3819,7 @@ Section EndToEndModel.
       spawn_latch cron_state cron_startup work_pool active_fanout
       fanout_progress classification_lookup e1_default_flip
       e1_satb_stw_driver dedicated_handoff driver_channel k_spine_current_work
+      vm_nested_locals
       (StructuralRoot WorkerRoot SafepointRoot EnvAnchor DispatchAnchor
        InitialRoot ShadedDeletion AllocateBlack PublishedAlloc SegmentWritten
        SegmentPublished SlotWritten SlotPublished AddrReturned ReadObserved
@@ -3594,7 +3836,7 @@ Section EndToEndModel.
         spawn_latch cron_state cron_startup work_pool active_fanout
         fanout_progress classification_lookup e1_default_flip
         e1_satb_stw_driver dedicated_handoff driver_channel
-        k_spine_current_work ->
+        k_spine_current_work vm_nested_locals ->
       (forall a,
           FutureTouch a ->
           @Collector.Reach BoundaryAddr
@@ -3665,8 +3907,9 @@ Section EndToEndModel.
       dispatch_rooted batch_live batch_rooted late_worker_live spawn_latch
       cron_state cron_startup work_pool active_fanout fanout_progress
       classification_lookup e1_default_flip e1_satb_stw_driver
-      dedicated_handoff driver_channel k_spine_current_work StructuralRoot WorkerRoot
-      SafepointRoot EnvAnchor DispatchAnchor InitialRoot ShadedDeletion
+      dedicated_handoff driver_channel k_spine_current_work vm_nested_locals
+      StructuralRoot WorkerRoot SafepointRoot EnvAnchor DispatchAnchor
+      InitialRoot ShadedDeletion
       AllocateBlack PublishedAlloc SegmentWritten SegmentPublished SlotWritten
       SlotPublished AddrReturned ReadObserved ConcurrentReturned ReuseReturned
       Fresh OnFreeList Marked Freed FutureTouch InlineEdge SideEdge SpaceEdge
@@ -3684,7 +3927,7 @@ Section EndToEndModel.
         spawn_latch cron_state cron_startup work_pool active_fanout
         fanout_progress classification_lookup e1_default_flip
         e1_satb_stw_driver dedicated_handoff driver_channel
-        k_spine_current_work Hend)
+        k_spine_current_work vm_nested_locals Hend)
       as Hgc_window.
     destruct
       (gc_window_safe_exports_boundary_driver_roots
@@ -3723,7 +3966,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live Hschedule.
     unfold end_to_end_safe.
@@ -3757,7 +4001,9 @@ Section EndToEndModel.
                                    -- apply complete_dedicated_handoff_safe.
                                    -- split.
                                       ++ apply complete_driver_channel_protocol_safe.
-                                      ++ apply complete_k_spine_current_work_safe. }
+                                      ++ split.
+                                         ** apply complete_k_spine_current_work_safe.
+                                         ** apply complete_vm_nested_locals_safe. }
   Qed.
 
   Theorem no_shift_classification_lookup_exposes_end_to_end_gap :
@@ -3786,7 +4032,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -3821,7 +4068,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -3855,7 +4103,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -3889,7 +4138,8 @@ Section EndToEndModel.
           missing_e1_satb_success_release_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -3923,7 +4173,8 @@ Section EndToEndModel.
           missing_e1_satb_abort_stw_backstop_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -3957,7 +4208,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           inline_after_consumed_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -3991,7 +4243,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           missing_reply_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -4025,7 +4278,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           missing_request_sender_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -4059,7 +4313,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           missing_reply_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -4093,7 +4348,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           orphan_reply_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -4127,7 +4383,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           fire_and_forget_waits_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -4161,7 +4418,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          missing_current_work_k_spine.
+          missing_current_work_k_spine
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -4195,7 +4453,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          missing_work_stack_k_spine.
+          missing_work_stack_k_spine
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -4229,11 +4488,222 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          missing_kont_k_spine.
+          missing_kont_k_spine
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
     apply missing_kont_exposes_k_spine_gap.
+    tauto.
+  Qed.
+
+  Theorem missing_pre_eval_vm_nested_locals_exposes_end_to_end_gap :
+    forall w wave active_worker_live,
+      schedule_envelope_safe w wave ->
+      ~ end_to_end_safe
+          w
+          wave
+          active_worker_live
+          active_worker_live
+          true
+          true
+          true
+          true
+          false
+          complete_spawn_latch
+          (cron_final_due
+            (cron_worker_complete true
+              (cron_second_due (cron_first_due true))))
+          complete_startup
+          complete_work_pool
+          complete_active_fanout
+          complete_fanout_progress
+          complete_classification_lookup
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff
+          complete_driver_channel
+          complete_k_spine_current_work
+          missing_pre_eval_vm_nested_locals.
+  Proof.
+    intros w wave active_worker_live Hschedule Hend.
+    unfold end_to_end_safe in Hend.
+    apply missing_pre_eval_exposes_vm_nested_locals_gap.
+    tauto.
+  Qed.
+
+  Theorem missing_dispatch_rhs_vm_nested_locals_exposes_end_to_end_gap :
+    forall w wave active_worker_live,
+      schedule_envelope_safe w wave ->
+      ~ end_to_end_safe
+          w
+          wave
+          active_worker_live
+          active_worker_live
+          true
+          true
+          true
+          true
+          false
+          complete_spawn_latch
+          (cron_final_due
+            (cron_worker_complete true
+              (cron_second_due (cron_first_due true))))
+          complete_startup
+          complete_work_pool
+          complete_active_fanout
+          complete_fanout_progress
+          complete_classification_lookup
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff
+          complete_driver_channel
+          complete_k_spine_current_work
+          missing_dispatch_rhs_vm_nested_locals.
+  Proof.
+    intros w wave active_worker_live Hschedule Hend.
+    unfold end_to_end_safe in Hend.
+    apply missing_dispatch_rhs_exposes_vm_nested_locals_gap.
+    tauto.
+  Qed.
+
+  Theorem missing_rule_matches_vm_nested_locals_exposes_end_to_end_gap :
+    forall w wave active_worker_live,
+      schedule_envelope_safe w wave ->
+      ~ end_to_end_safe
+          w
+          wave
+          active_worker_live
+          active_worker_live
+          true
+          true
+          true
+          true
+          false
+          complete_spawn_latch
+          (cron_final_due
+            (cron_worker_complete true
+              (cron_second_due (cron_first_due true))))
+          complete_startup
+          complete_work_pool
+          complete_active_fanout
+          complete_fanout_progress
+          complete_classification_lookup
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff
+          complete_driver_channel
+          complete_k_spine_current_work
+          missing_rule_matches_vm_nested_locals.
+  Proof.
+    intros w wave active_worker_live Hschedule Hend.
+    unfold end_to_end_safe in Hend.
+    apply missing_rule_matches_exposes_vm_nested_locals_gap.
+    tauto.
+  Qed.
+
+  Theorem missing_saved_bindings_vm_nested_locals_exposes_end_to_end_gap :
+    forall w wave active_worker_live,
+      schedule_envelope_safe w wave ->
+      ~ end_to_end_safe
+          w
+          wave
+          active_worker_live
+          active_worker_live
+          true
+          true
+          true
+          true
+          false
+          complete_spawn_latch
+          (cron_final_due
+            (cron_worker_complete true
+              (cron_second_due (cron_first_due true))))
+          complete_startup
+          complete_work_pool
+          complete_active_fanout
+          complete_fanout_progress
+          complete_classification_lookup
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff
+          complete_driver_channel
+          complete_k_spine_current_work
+          missing_saved_bindings_vm_nested_locals.
+  Proof.
+    intros w wave active_worker_live Hschedule Hend.
+    unfold end_to_end_safe in Hend.
+    apply missing_saved_bindings_exposes_vm_nested_locals_gap.
+    tauto.
+  Qed.
+
+  Theorem missing_combos_vm_nested_locals_exposes_end_to_end_gap :
+    forall w wave active_worker_live,
+      schedule_envelope_safe w wave ->
+      ~ end_to_end_safe
+          w
+          wave
+          active_worker_live
+          active_worker_live
+          true
+          true
+          true
+          true
+          false
+          complete_spawn_latch
+          (cron_final_due
+            (cron_worker_complete true
+              (cron_second_due (cron_first_due true))))
+          complete_startup
+          complete_work_pool
+          complete_active_fanout
+          complete_fanout_progress
+          complete_classification_lookup
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff
+          complete_driver_channel
+          complete_k_spine_current_work
+          missing_combos_vm_nested_locals.
+  Proof.
+    intros w wave active_worker_live Hschedule Hend.
+    unfold end_to_end_safe in Hend.
+    apply missing_combos_exposes_vm_nested_locals_gap.
+    tauto.
+  Qed.
+
+  Theorem missing_outcomes_vm_nested_locals_exposes_end_to_end_gap :
+    forall w wave active_worker_live,
+      schedule_envelope_safe w wave ->
+      ~ end_to_end_safe
+          w
+          wave
+          active_worker_live
+          active_worker_live
+          true
+          true
+          true
+          true
+          false
+          complete_spawn_latch
+          (cron_final_due
+            (cron_worker_complete true
+              (cron_second_due (cron_first_due true))))
+          complete_startup
+          complete_work_pool
+          complete_active_fanout
+          complete_fanout_progress
+          complete_classification_lookup
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff
+          complete_driver_channel
+          complete_k_spine_current_work
+          missing_outcomes_vm_nested_locals.
+  Proof.
+    intros w wave active_worker_live Hschedule Hend.
+    unfold end_to_end_safe in Hend.
+    apply missing_outcomes_exposes_vm_nested_locals_gap.
     tauto.
   Qed.
 
@@ -4269,7 +4739,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state Hschedule Hgc Hcron
@@ -4315,7 +4786,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_startup work_pool
@@ -4362,7 +4834,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4399,7 +4872,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave cron_state cron_startup work_pool Hschedule Hcron Hstartup
       Hwork_pool Hend.
@@ -4436,7 +4910,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave cron_state cron_startup work_pool Hschedule Hcron Hstartup
       Hwork_pool Hend.
@@ -4479,7 +4954,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
@@ -4522,7 +4998,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
@@ -4565,7 +5042,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
@@ -4610,7 +5088,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4644,7 +5123,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -4677,7 +5157,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -4710,7 +5191,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -4743,7 +5225,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -4788,7 +5271,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4836,7 +5320,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4872,7 +5357,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4906,7 +5392,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4940,7 +5427,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4974,7 +5462,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -5008,7 +5497,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -5042,7 +5532,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -5076,7 +5567,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -5110,7 +5602,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -5144,7 +5637,8 @@ Section EndToEndModel.
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
           complete_driver_channel
-          complete_k_spine_current_work.
+          complete_k_spine_current_work
+          complete_vm_nested_locals.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool

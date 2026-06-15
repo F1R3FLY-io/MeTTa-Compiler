@@ -1044,8 +1044,9 @@ facts the proofs rely on:
   fail if `current_work`, the pending `work_stack`, or the continuation stack is omitted.
 - VM native locals live across nested CESK evaluation are now a formal K-spine leaf obligation. `VmNestedLocals.v`
   proves that pre-eval locals, dispatch RHS locals, rule-match vectors, saved bindings, combo vectors, and accumulated
-  outcomes survive collection when published through `VmLeaf::ValueVec`; `VmNestedLocals.tla` fails if either the
-  pre-eval locals or rule-match vector class is omitted.
+  outcomes survive collection when published through `VmLeaf::ValueVec`; `VmNestedLocals.tla` now fails independently
+  if any of the pre-eval, dispatch RHS, rule-match, saved-binding, combo, or accumulated-outcome local classes is
+  omitted.
 - The E1 stress ASAN counterexample showed a pre-spawn FANOUT watermark could still run the non-rendezvous midloop
   collector (`worker_ever_spawned()==false`) before the first worker existed. The corrected obligation is split:
   FANOUT closes midloop non-rendezvous collection, but true quiescence (`active_evaluator_count()==0 && n_threads()==0`)
@@ -1249,7 +1250,7 @@ facts the proofs rely on:
   `SchedulerFanoutAdmissionCompleteness.v`,
   `CollapseFanoutAdmissionCompleteness.v`, `SchedulerFanoutProgress.v`, and
   `SchedulerGcBoundary.v`, plus `DedicatedHandoff.v`,
-  `GcDriverChannelProtocol.v`, `KSpineCurrentWork.v`,
+  `GcDriverChannelProtocol.v`, `KSpineCurrentWork.v`, `VmNestedLocals.v`,
   `E1DefaultConcurrentFlip.v` and
   `E1SatbStwDriverProgress.v`: classification-table
   range disjointness, wavefront edge coverage, direct-fanout independent-wavefront
@@ -1259,7 +1260,10 @@ facts the proofs rely on:
   request/backstop boundary plus the SATB-success-or-fresh-STW driver release
   boundary, dedicated root-vector ownership handoff, driver request/response
   channel liveness, and K-spine structural control roots are part of the same
-  end-to-end proof boundary.
+  end-to-end proof boundary. Bytecode-VM native locals held across nested CESK
+  evaluation are also part of that boundary: pre-eval locals, dispatch RHS
+  locals, rule-match vectors, saved bindings, combo vectors, and accumulated
+  outcomes must be represented by typed K-spine leaves before collection.
   The Rocq envelope now also imports `CESKCollectorSafety.v` and proves
   `end_to_end_safe_feeds_cesk_index_gc_safety`: from `EndToEndSafe` it extracts
   the `gc_window_safe` scheduler-root premises, feeds them into
@@ -1301,7 +1305,12 @@ facts the proofs rely on:
   `GcDriverChannelProtocol`. The K-spine E2E discriminators fail specifically
   on `KSpineCurrentWorkRooted`, `KSpineWorkStackRooted`, and `KSpineKontRooted`
   for omitted current work, pending work stack, and continuation roots, matching
-  the typed K-spine theorem composed by `KSpineCurrentWork`. The missing
+  the typed K-spine theorem composed by `KSpineCurrentWork`. The VM nested-local
+  E2E discriminators fail specifically on `VmNestedPreEvalRooted`,
+  `VmNestedDispatchRhsRooted`, `VmNestedRuleMatchesRooted`,
+  `VmNestedSavedBindingsRooted`, `VmNestedCombosRooted`, and
+  `VmNestedOutcomesRooted` for omitted VM native-local classes, matching the
+  typed K-spine leaf theorem composed by `VmNestedLocals`. The missing
   dependency-edge and effect-conflict-edge
   E2E discriminators now fail specifically on `SchedulerWavefrontEdgesComplete`,
   and the partial

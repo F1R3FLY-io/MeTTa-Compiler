@@ -324,7 +324,10 @@ The formal lane covers the main scheduler obligations:
   also imports `KSpineCurrentWork.v`: a suspended trampoline activation's
   structural control roots must include the in-flight `current_work` item, the
   pending `work_stack`, and the continuation stack before a nested evaluator can
-  collect.
+  collect. The same composed envelope imports `VmNestedLocals.v`; bytecode-VM
+  native locals held across nested CESK evaluation must publish pre-eval,
+  dispatch RHS, rule-match, saved-binding, combo, and accumulated-outcome values
+  through typed K-spine leaves before collection can run.
 
 These proofs are mandatory in `scripts/verify_cesk_gc_formal.sh`.
 
@@ -616,6 +619,12 @@ The composed end-to-end envelope is modeled by:
 - `tla/MC_ThreadingEndToEndInterleaving_k_spine_missing_current_work.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_k_spine_missing_work_stack.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_k_spine_missing_kont.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_vm_nested_missing_pre_eval.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_vm_nested_missing_dispatch_rhs.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_vm_nested_missing_rule_matches.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_vm_nested_missing_saved_bindings.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_vm_nested_missing_combos.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_vm_nested_missing_outcomes.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_missing_purity.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_missing_budget.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_partial_dispatch.cfg`
@@ -655,8 +664,8 @@ The positive dependency-bearing and independent configs preserve
 `SchedulerDirectFanoutRefinesWavefront`, `ActiveFanoutAdmissionComplete`,
 `CollapseFanoutAdmissionComplete`, `E1DefaultFlipSafe`, and
 `E1SatbStwDriverSafe`, `DedicatedHandoffSafe`, and
-`DriverChannelProtocolSafe`, and `KSpineCurrentWorkSafe` inside the composed
-model.
+`DriverChannelProtocolSafe`, `KSpineCurrentWorkSafe`, and
+`VmNestedLocalsSafe` inside the composed model.
 The no-shift classification config violates
 `SchedulerClassificationRangesDisjoint`. The E1 legacy-default and
 trigger-backstop configs violate `E1LegacyProducersSuppressed` and
@@ -674,8 +683,13 @@ corresponding missing request sender, missing reply, orphan reply, and
 fire-and-forget wait shapes. The K-spine configs violate
 `KSpineCurrentWorkRooted`, `KSpineWorkStackRooted`, and `KSpineKontRooted` when
 the composed structural-root reader omits the current work item, pending work
-stack, or continuation stack. The missing dependency and missing effect-conflict
-edge configs violate
+stack, or continuation stack.
+The VM nested-local configs violate `VmNestedPreEvalRooted`,
+`VmNestedDispatchRhsRooted`, `VmNestedRuleMatchesRooted`,
+`VmNestedSavedBindingsRooted`, `VmNestedCombosRooted`, and
+`VmNestedOutcomesRooted` when the composed typed K-spine reader omits the
+corresponding bytecode-VM native-local group across nested CESK evaluation.
+The missing dependency and missing effect-conflict edge configs violate
 `SchedulerWavefrontEdgesComplete`. The partial direct-dispatch config violates
 `SchedulerDirectFanoutRefinesWavefront`. The degree-as-spawn-cap and
 threshold-as-spawn-cap configs violate `ActiveFanoutAdmissionComplete` and

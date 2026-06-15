@@ -414,6 +414,18 @@ run_tlc "threading_end_to_end_k_spine_missing_work_stack" "ThreadingEndToEndInte
   fail "The invariant of KSpineWorkStackRooted is equal to FALSE"
 run_tlc "threading_end_to_end_k_spine_missing_kont" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_k_spine_missing_kont.cfg" \
   fail "The invariant of KSpineKontRooted is equal to FALSE"
+run_tlc "threading_end_to_end_vm_nested_missing_pre_eval" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_vm_nested_missing_pre_eval.cfg" \
+  fail "The invariant of VmNestedPreEvalRooted is equal to FALSE"
+run_tlc "threading_end_to_end_vm_nested_missing_dispatch_rhs" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_vm_nested_missing_dispatch_rhs.cfg" \
+  fail "The invariant of VmNestedDispatchRhsRooted is equal to FALSE"
+run_tlc "threading_end_to_end_vm_nested_missing_rule_matches" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_vm_nested_missing_rule_matches.cfg" \
+  fail "The invariant of VmNestedRuleMatchesRooted is equal to FALSE"
+run_tlc "threading_end_to_end_vm_nested_missing_saved_bindings" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_vm_nested_missing_saved_bindings.cfg" \
+  fail "The invariant of VmNestedSavedBindingsRooted is equal to FALSE"
+run_tlc "threading_end_to_end_vm_nested_missing_combos" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_vm_nested_missing_combos.cfg" \
+  fail "The invariant of VmNestedCombosRooted is equal to FALSE"
+run_tlc "threading_end_to_end_vm_nested_missing_outcomes" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_vm_nested_missing_outcomes.cfg" \
+  fail "The invariant of VmNestedOutcomesRooted is equal to FALSE"
 run_tlc "threading_end_to_end_active_fanout_missing_purity" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_active_fanout_missing_purity.cfg" \
   fail "The invariant of ActiveFanoutGateComplete is equal to FALSE"
 run_tlc "threading_end_to_end_active_fanout_missing_budget" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_active_fanout_missing_budget.cfg" \
@@ -585,7 +597,15 @@ run_tlc "vm_nested_locals_all" "MC_VmNestedLocals.tla" "MC_VmNestedLocals_all.cf
   pass ""
 run_tlc "vm_nested_locals_missing_pre_eval" "MC_VmNestedLocals.tla" "MC_VmNestedLocals_missing_pre_eval.cfg" \
   fail "Invariant NoLiveVmLocalFreed is violated"
+run_tlc "vm_nested_locals_missing_dispatch_rhs" "MC_VmNestedLocals.tla" "MC_VmNestedLocals_missing_dispatch_rhs.cfg" \
+  fail "Invariant NoLiveVmLocalFreed is violated"
 run_tlc "vm_nested_locals_missing_rule_matches" "MC_VmNestedLocals.tla" "MC_VmNestedLocals_missing_rule_matches.cfg" \
+  fail "Invariant NoLiveVmLocalFreed is violated"
+run_tlc "vm_nested_locals_missing_saved_bindings" "MC_VmNestedLocals.tla" "MC_VmNestedLocals_missing_saved_bindings.cfg" \
+  fail "Invariant NoLiveVmLocalFreed is violated"
+run_tlc "vm_nested_locals_missing_combos" "MC_VmNestedLocals.tla" "MC_VmNestedLocals_missing_combos.cfg" \
+  fail "Invariant NoLiveVmLocalFreed is violated"
+run_tlc "vm_nested_locals_missing_outcomes" "MC_VmNestedLocals.tla" "MC_VmNestedLocals_missing_outcomes.cfg" \
   fail "Invariant NoLiveVmLocalFreed is violated"
 run_tlc "non_rendezvous_fanout_blocked" "MC_NonRendezvousFanoutGate.tla" "MC_NonRendezvousFanoutGate_fanout_blocked.cfg" \
   pass ""

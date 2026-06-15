@@ -61,6 +61,12 @@ CONSTANTS
     KSpineIncludeCurrentWork,
     KSpineIncludeWorkStack,
     KSpineIncludeKont,
+    VmNestedIncludePreEval,
+    VmNestedIncludeDispatchRhs,
+    VmNestedIncludeRuleMatches,
+    VmNestedIncludeSavedBindings,
+    VmNestedIncludeCombos,
+    VmNestedIncludeOutcomes,
     IncludeWorkerRoot,
     IncludeDispatchRoot,
     IncludeBatchRoot,
@@ -288,6 +294,12 @@ BooleanConstantsOK ==
     /\ KSpineIncludeCurrentWork \in BOOLEAN
     /\ KSpineIncludeWorkStack \in BOOLEAN
     /\ KSpineIncludeKont \in BOOLEAN
+    /\ VmNestedIncludePreEval \in BOOLEAN
+    /\ VmNestedIncludeDispatchRhs \in BOOLEAN
+    /\ VmNestedIncludeRuleMatches \in BOOLEAN
+    /\ VmNestedIncludeSavedBindings \in BOOLEAN
+    /\ VmNestedIncludeCombos \in BOOLEAN
+    /\ VmNestedIncludeOutcomes \in BOOLEAN
     /\ IncludeWorkerRoot \in BOOLEAN
     /\ IncludeDispatchRoot \in BOOLEAN
     /\ IncludeBatchRoot \in BOOLEAN
@@ -558,6 +570,41 @@ KSpineCurrentWorkSafe ==
     /\ KSpineWorkStackRooted
     /\ KSpineKontRooted
     /\ KSpineNoLiveControlFreed
+
+VmNestedPreEvalRooted ==
+    VmNestedIncludePreEval
+
+VmNestedDispatchRhsRooted ==
+    VmNestedIncludeDispatchRhs
+
+VmNestedRuleMatchesRooted ==
+    VmNestedIncludeRuleMatches
+
+VmNestedSavedBindingsRooted ==
+    VmNestedIncludeSavedBindings
+
+VmNestedCombosRooted ==
+    VmNestedIncludeCombos
+
+VmNestedOutcomesRooted ==
+    VmNestedIncludeOutcomes
+
+VmNestedNoLiveLocalFreed ==
+    /\ VmNestedPreEvalRooted
+    /\ VmNestedDispatchRhsRooted
+    /\ VmNestedRuleMatchesRooted
+    /\ VmNestedSavedBindingsRooted
+    /\ VmNestedCombosRooted
+    /\ VmNestedOutcomesRooted
+
+VmNestedLocalsSafe ==
+    /\ VmNestedPreEvalRooted
+    /\ VmNestedDispatchRhsRooted
+    /\ VmNestedRuleMatchesRooted
+    /\ VmNestedSavedBindingsRooted
+    /\ VmNestedCombosRooted
+    /\ VmNestedOutcomesRooted
+    /\ VmNestedNoLiveLocalFreed
 
 ConsumerWave ==
     IF EdgeComplete /\ (HasDependency \/ HasEffectConflict) THEN 1 ELSE 0
@@ -1409,6 +1456,7 @@ EndToEndSafe ==
     /\ DedicatedHandoffSafe
     /\ DriverChannelProtocolSafe
     /\ KSpineCurrentWorkSafe
+    /\ VmNestedLocalsSafe
     /\ SchedulerWavefrontEdgesComplete
     /\ SchedulerDirectFanoutRefinesWavefront
     /\ ActiveFanoutGateComplete

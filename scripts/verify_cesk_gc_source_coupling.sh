@@ -874,11 +874,13 @@ line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "E1DefaultConcurrentFli
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "E1SatbStwDriverProgress" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "GcDriverChannelProtocol" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "KSpineCurrentWork" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "VmNestedLocals" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "CESKCollectorSafety" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module Collector :=" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module Dedicated :=" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module DriverChannel :=" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module KSpine :=" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module VmNested :=" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module E1Driver :=" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "gc_window_safe_exports_boundary_driver_roots" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "end_to_end_safe_implies_gc_window_safe" >/dev/null
@@ -922,6 +924,15 @@ line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "complete_k_spine_curre
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_current_work_k_spine_exposes_end_to_end_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_work_stack_k_spine_exposes_end_to_end_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_kont_k_spine_exposes_end_to_end_gap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "vm_nested_local_root_contract_survives_collection" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "VmNested.vm_nested_local_survives_collection" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "complete_vm_nested_locals_safe" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_pre_eval_vm_nested_locals_exposes_end_to_end_gap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_dispatch_rhs_vm_nested_locals_exposes_end_to_end_gap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_rule_matches_vm_nested_locals_exposes_end_to_end_gap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_saved_bindings_vm_nested_locals_exposes_end_to_end_gap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_combos_vm_nested_locals_exposes_end_to_end_gap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_outcomes_vm_nested_locals_exposes_end_to_end_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_dependency_edge_exposes_incomplete_reordering" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_effect_conflict_edge_exposes_incomplete_reordering" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "active_fanout_gate_safe_implies_admission_complete" >/dev/null
@@ -963,8 +974,16 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronStartupDelivery.tla" "4"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolLifecycle.tla" "3"
-assert_count "scripts/verify_cesk_gc_formal.sh" "ThreadingEndToEndInterleaving.tla" "48"
+assert_count "scripts/verify_cesk_gc_formal.sh" "ThreadingEndToEndInterleaving.tla" "54"
 assert_count "scripts/verify_cesk_gc_formal.sh" "KSpineCurrentWork.tla" "4"
+assert_count "scripts/verify_cesk_gc_formal.sh" "VmNestedLocals.tla" "7"
+line_no "scripts/verify_cesk_gc_formal.sh" "vm_nested_locals_all" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "vm_nested_locals_missing_pre_eval" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "vm_nested_locals_missing_dispatch_rhs" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "vm_nested_locals_missing_rule_matches" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "vm_nested_locals_missing_saved_bindings" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "vm_nested_locals_missing_combos" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "vm_nested_locals_missing_outcomes" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_classification_no_shift" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationRangesDisjoint is equal to FALSE" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_e1_legacy_default_ungated" >/dev/null
@@ -993,6 +1012,18 @@ line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_k_spine_missing
 line_no "scripts/verify_cesk_gc_formal.sh" "KSpineWorkStackRooted is equal to FALSE" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_k_spine_missing_kont" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "KSpineKontRooted is equal to FALSE" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_vm_nested_missing_pre_eval" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "VmNestedPreEvalRooted is equal to FALSE" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_vm_nested_missing_dispatch_rhs" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "VmNestedDispatchRhsRooted is equal to FALSE" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_vm_nested_missing_rule_matches" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "VmNestedRuleMatchesRooted is equal to FALSE" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_vm_nested_missing_saved_bindings" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "VmNestedSavedBindingsRooted is equal to FALSE" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_vm_nested_missing_combos" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "VmNestedCombosRooted is equal to FALSE" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_vm_nested_missing_outcomes" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "VmNestedOutcomesRooted is equal to FALSE" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveFanoutGateComplete" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "SchedulerClassificationRangesDisjoint" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "E1DefaultFlipSafe" >/dev/null
@@ -1013,6 +1044,13 @@ line_no "tla/ThreadingEndToEndInterleaving.tla" "KSpineCurrentWorkSafe" >/dev/nu
 line_no "tla/ThreadingEndToEndInterleaving.tla" "KSpineCurrentWorkRooted" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "KSpineWorkStackRooted" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "KSpineKontRooted" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "VmNestedLocalsSafe" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "VmNestedPreEvalRooted" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "VmNestedDispatchRhsRooted" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "VmNestedRuleMatchesRooted" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "VmNestedSavedBindingsRooted" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "VmNestedCombosRooted" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "VmNestedOutcomesRooted" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveFanoutAdmissionComplete" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "CollapseFanoutAdmissionComplete" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveTransducerDegreeMatches" >/dev/null

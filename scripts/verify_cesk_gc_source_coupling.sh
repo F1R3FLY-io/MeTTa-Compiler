@@ -160,6 +160,12 @@ assert_after_before \
   "index-gc is required" \
   "pub mod backend;"
 
+# F4 R8: the slab Store impl (SlabStore) is deleted; the Store trait survives,
+# impl'd only by IndexHeapStore. (SlabAllocator/GcFactory are KEPT — they are
+# the shared value-page / interning substrate of the index build.)
+assert_zero "src/backend/eval/cesk/store.rs" "pub struct SlabStore"
+assert_zero "src/backend/eval/cesk/store.rs" "impl Store<MettaValue> for SlabStore"
+
 # Phase F3 live gates realize the same DefaultStoreSelection.v theorem: default
 # builds exercise index-gc. (F4 R2 removed the legacy slab comparison arms and
 # the ab_gc_diff / f1_welch_bench / f1_memory_effectiveness A/B scripts.)

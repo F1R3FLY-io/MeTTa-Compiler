@@ -32,10 +32,6 @@
 
 // Phase 1.1 PT-canonical Error tuple (Type, Ctx) — /* PT-swapped */
 use std::alloc::Layout;
-// A5.3/A5.4: `Any` is used only by the slab arm of `try_register_env_roots`
-// (the `Arc<dyn Any>` downcast); the index build's no-op arm doesn't need it.
-#[cfg(not(feature = "index-gc"))]
-use std::any::Any;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::mem;
@@ -44,15 +40,8 @@ use std::sync::atomic::{
     AtomicBool, AtomicIsize, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering,
 };
 use std::sync::{Arc, OnceLock};
-// A5.5: `Weak` is used only by the slab-only ROOT_REGISTRY (Vec<Weak<dyn RootProvider>>),
-// which is cfg-walled to slab — so the import is slab-only to avoid an unused-import
-// warning in the index build (keeps the lib-warning count at 49 in BOTH builds).
-#[cfg(not(feature = "index-gc"))]
-use std::sync::Weak;
 use std::thread;
 use std::time::Duration;
-#[cfg(not(feature = "index-gc"))]
-use std::time::Instant;
 
 use parking_lot::{Condvar, Mutex, RwLock};
 use portable_atomic::AtomicU128;
@@ -130,10 +119,6 @@ const SLOT_ALIGN: usize = 16;
 
 /// Minimum GC threshold (4 MB).
 const MIN_GC_THRESHOLD: usize = 4 * 1024 * 1024;
-
-/// GC growth factor — next threshold = live_bytes * GROWTH_FACTOR.
-#[cfg(not(feature = "index-gc"))]
-const GC_GROWTH_FACTOR: f64 = 2.0;
 
 /// Null sentinel for Treiber stack (no free slots).
 const TREIBER_NULL: u128 = 0;
@@ -4886,43 +4871,6 @@ pub fn gc_cycle_in_flight() -> bool {
     GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire)
 }
 
-/// Wait until the asynchronous mark/sweep cycle has fully completed and its
-/// response has been processed.
-///
-/// Session release can free session-owned slots. It must not run while a
-/// snapshot response is outstanding, because that response's dead set was
-/// computed against the pre-release slot state and could otherwise free the
-/// same slot again. The caller must re-check `gc_cycle_in_flight()` after
-/// acquiring `GcInProgressGuard`, because another thread may start a cycle
-/// between this wait and the guard acquisition.
-#[cfg(not(feature = "index-gc"))]
-pub(super) fn wait_for_gc_cycle_idle(timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-
-    loop {
-        if !GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire) {
-            return true;
-        }
-
-        let _ = maybe_process_gc_response();
-        if !GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire) {
-            return true;
-        }
-
-        let now = Instant::now();
-        if now >= deadline {
-            return false;
-        }
-        let remaining = deadline.saturating_duration_since(now);
-        let wait_for = remaining.min(Duration::from_millis(100));
-
-        let mut lock = GC_CYCLE_MUTEX.lock();
-        if GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire) {
-            let _ = GC_CYCLE_CONDVAR.wait_for(&mut lock, wait_for);
-        }
-    }
-}
-
 /// Return the current GC sweep epoch.
 ///
 /// Thread-local caches compare their local epoch against this value to detect
@@ -4988,14 +4936,6 @@ static BACKPRESSURE_LEVEL: AtomicU8 = AtomicU8::new(0);
 /// GC is unreachable (no quiescent points being hit), which would cause
 /// permanent throttling in library/test code.
 static GC_REACHABLE_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// Mutex + Condvar pair for Tier 2 backpressure blocking.
-/// Replaces 1ms polling loop with instant wakeup when GC cycle completes.
-/// Notified from `maybe_process_gc_response()` after clearing `GC_CYCLE_IN_FLIGHT`.
-#[cfg(not(feature = "index-gc"))]
-static GC_CYCLE_MUTEX: Mutex<()> = Mutex::new(());
-#[cfg(not(feature = "index-gc"))]
-static GC_CYCLE_CONDVAR: Condvar = Condvar::new();
 
 /// Maximum backpressure level. At this level, Tier 2 blocks until GC completes.
 pub const MAX_BACKPRESSURE: u8 = 3;
@@ -5123,23 +5063,9 @@ pub fn apply_backpressure_tier1() {
     }
 }
 
-/// Tier 2 backpressure: block at max level until GC cycle completes.
-///
-/// Called from main.rs between top-level expressions and from the eval()
-/// return path. At MAX level, parks on `GC_CYCLE_CONDVAR` until
-/// `gc_cycle_in_flight()` returns false (notified from
-/// `maybe_process_gc_response()` after clearing `GC_CYCLE_IN_FLIGHT`).
-///
-/// The caller should also call `maybe_process_gc_response()` as a
-/// standalone action before this function (matching TLA+ ProcessGcResponse
-/// at "between" phase), so the common case of an already-available
-/// response is handled without entering the loop.
-///
-/// At levels below MAX, this is a no-op.
-///
-/// Uses a condvar with 100ms timeout instead of polling (zero CPU while
-/// waiting, instant wakeup on GC completion, timeout as safety net against
-/// lost notifications).
+/// Tier 2 backpressure entry point. Under the purely-async GC mandate this is
+/// a no-op (see the body): the trampoline and the main thread must never block
+/// on GC progress. Retained as a stable public entry point.
 #[inline]
 pub fn apply_backpressure_tier2() {
     // Phase 9.6: by the purely-async GC mandate, the trampoline thread

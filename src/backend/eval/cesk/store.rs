@@ -12,10 +12,10 @@
 //!
 //! ## Current Implementation
 //!
-//! `SlabStore` wraps the existing `GcFactory` / `SlabAllocator`, providing the
-//! `Store` trait interface without changing allocation behavior. The `AllocHint`
-//! is recorded but not yet acted upon — future phases (Phase 2: GC + Allocation)
-//! will use hints to route allocations to different regions.
+//! The active `Store` is `IndexHeapStore` (the index arena σ), selected via
+//! `ActiveStore` (`backend::models`). The `AllocHint` is recorded but not yet
+//! acted upon — future phases (Phase 2: GC + Allocation) will use hints to route
+//! allocations to different regions.
 
 use std::fmt::Debug;
 
@@ -216,151 +216,6 @@ pub trait Store<V: MettaValueTrait>: Debug + Send + Sync {
     }
 }
 
-// ============================================================================
-// SlabStore — Production Store wrapping GcFactory
-// ============================================================================
-
-use crate::backend::models::{
-    alloc_count_snapshot, committed_bytes_snapshot, global_allocator, GcFactory, MettaValue,
-};
-
-/// Production Store implementation wrapping the global `GcFactory`.
-///
-/// This is the concrete Store used by the SECK machine in production.
-/// It delegates all allocations to the lock-free `SlabAllocator` via `GcFactory`.
-///
-/// ## AllocHint Behavior
-///
-/// Currently all hints are ignored — all allocations go to the global slab.
-/// Future phases will route hints to different allocation strategies:
-/// - `LetScope`: bump-region allocation (Phase 2.1)
-/// - `ThreadLocal`: per-thread nursery (Phase 3.2)
-/// - `ShortLived`: nursery with promotion (Phase 2.2)
-/// - `LongLived`: direct old-gen placement (Phase 2.2)
-#[derive(Debug, Clone, Copy)]
-pub struct SlabStore {
-    factory: GcFactory,
-}
-
-impl SlabStore {
-    /// Create a new `SlabStore` backed by the global slab allocator.
-    #[inline]
-    pub fn new() -> Self {
-        // `SlabStore` always wraps the concrete slab `GcFactory`. Construct it
-        // directly rather than via `global_factory()` (now feature-polymorphic).
-        // Byte-identical to the previous body in the default build.
-        Self {
-            factory: GcFactory::new(global_allocator()),
-        }
-    }
-
-    /// Get the inner `GcFactory`.
-    #[inline]
-    pub fn gc_factory(&self) -> GcFactory {
-        self.factory
-    }
-}
-
-impl Default for SlabStore {
-    #[inline]
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Store<MettaValue> for SlabStore {
-    type Factory = GcFactory;
-
-    #[inline]
-    fn factory(&self) -> &GcFactory {
-        &self.factory
-    }
-
-    #[inline]
-    fn live_bytes(&self) -> usize {
-        committed_bytes_snapshot()
-    }
-
-    #[inline]
-    fn alloc_count(&self) -> u64 {
-        alloc_count_snapshot()
-    }
-}
-
-// ============================================================================
-// Tests
-// ============================================================================
-
-// (cfg-gate) These tests construct `SlabStore` directly and decode the slab
-// values it allocates. Under `--features index-gc` the active store is
-// `IndexHeapStore`, so the process decodes values as index-arena handles
-// (`gc_mode_is_index()`); slab values produced here are not interpretable by
-// that runtime. They test slab-store internals and run only in the slab build.
-#[cfg(all(test, not(feature = "index-gc")))]
-mod tests {
-    use super::*;
-    use crate::backend::models::MettaValueTrait;
-
-    #[test]
-    fn test_slab_store_basic_alloc() {
-        let store = SlabStore::new();
-        let v = store.alloc_atom("hello", AllocHint::Default);
-        assert!(v.is_atom());
-        assert_eq!(MettaValueTrait::as_atom(&v), Some("hello"));
-    }
-
-    #[test]
-    fn test_slab_store_alloc_hints_accepted() {
-        let store = SlabStore::new();
-
-        // All hints should produce valid values (hints are advisory only)
-        let _ = store.alloc_long(42, AllocHint::ShortLived);
-        let _ = store.alloc_bool(true, AllocHint::LongLived);
-        let _ = store.alloc_float(3.14, AllocHint::LetScope { region_id: 1 });
-        let _ = store.alloc_string("test", AllocHint::ThreadLocal);
-        let _ = store.alloc_unit(AllocHint::HashConsed);
-        let _ = store.alloc_empty(AllocHint::Default);
-    }
-
-    #[test]
-    fn test_slab_store_region_noop() {
-        let store = SlabStore::new();
-        let region = store.enter_region();
-        assert_eq!(region.id, 0);
-        store.exit_region(region); // Should not panic
-    }
-
-    #[test]
-    fn test_slab_store_sexpr() {
-        let store = SlabStore::new();
-        let items = vec![
-            store.alloc_atom("+", AllocHint::Default),
-            store.alloc_long(1, AllocHint::ShortLived),
-            store.alloc_long(2, AllocHint::ShortLived),
-        ];
-        let sexpr = store.alloc_sexpr(items, AllocHint::Default);
-        assert!(sexpr.is_sexpr());
-        assert_eq!(sexpr.as_sexpr().expect("is sexpr").len(), 3);
-    }
-
-    #[test]
-    fn test_alloc_hint_default() {
-        assert_eq!(AllocHint::default(), AllocHint::Default);
-    }
-
-    #[test]
-    fn test_slab_store_live_bytes() {
-        let store = SlabStore::new();
-        // Just verify it doesn't panic — actual value depends on global state
-        let _ = store.live_bytes();
-    }
-
-    #[test]
-    fn test_slab_store_size() {
-        // SlabStore should be pointer-sized (holds one GcFactory)
-        assert_eq!(
-            std::mem::size_of::<SlabStore>(),
-            std::mem::size_of::<GcFactory>()
-        );
-    }
-}
+// The `SlabStore` Store impl was deleted (F4 R8): the active store is
+// `IndexHeapStore` (`ActiveStore`); the `Store` trait above is the shared
+// abstraction, impl'd by `IndexHeapStore` in `index_heap.rs`.

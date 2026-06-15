@@ -1429,10 +1429,11 @@ assert_after_before "src/backend/eval/trampoline/session_context.rs" "fn perform
 assert_after_before "src/backend/eval/trampoline/context.rs" "pub(super) fn parallel_gc_coop_enabled() -> bool" "!crate::backend::models::gc_allocator::dedicated_gc_enabled()" "}"
 assert_after_before "src/backend/eval/trampoline/context.rs" "impl EvalContext for ParallelBranchContext" "if !parallel_gc_coop_enabled() {" "crate::backend::models::gc_allocator::is_gc_requested()"
 assert_after_before "src/backend/eval/trampoline/context.rs" "impl EvalContext for ParallelBranchContext" "if parallel_gc_coop_enabled() {" "request_gc();"
-assert_immediate_cfg_before "src/backend/models/gc_cron.rs" "use super::gc_allocator::{maybe_async_gc, request_gc};" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before_after "src/backend/models/gc_cron.rs" "fn execute_memory_monitor" "if should_gc {" "#[cfg(not(feature = \"index-gc\"))]"
+# (F4 R6) The slab-only cron request_gc producer was deleted: the import pin
+# and the `#[cfg(not index-gc)] if should_gc { request_gc() }` pin are gone.
+# The absence guard below stays (it forbids re-introducing a runtime-gated
+# cron producer); CronProducerErasure.v (pinned below) is the formal witness.
 assert_zero "src/backend/models/gc_cron.rs" "if should_gc && !super::gc_allocator::dedicated_gc_enabled()"
-assert_after_before "src/backend/models/gc_cron.rs" "fn execute_memory_monitor" "request_gc();" "let _ = maybe_async_gc();"
 line_no "formal/rocq/gc/CronProducerErasure.v" "Theorem default_index_erases_legacy_cron_request" >/dev/null
 line_no "formal/rocq/gc/CronProducerErasure.v" "Theorem legacy_cron_request_requires_slab_and_pressure" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" 'run_rocq "formal/rocq/gc/CronProducerErasure.v"' >/dev/null

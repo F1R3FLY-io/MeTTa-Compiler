@@ -9,20 +9,15 @@
 //! tasks:
 //!
 //! **Memory monitor** (100ms interval): Reads atomics, computes allocation
-//! rate (allocs/s), calls `request_gc()` if rate exceeds threshold OR
-//! committed bytes exceed `gc_threshold`.
+//! rate (allocs/s), and sets the allocator backpressure level. The index
+//! collector is driven by the safepoint watermark, so the monitor itself
+//! does not trigger collection.
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, OnceLock};
 
 use std::time::{Duration, Instant};
 
-#[cfg(not(feature = "index-gc"))]
-use super::adaptive_pool::{Ema, HillClimber, ScaleAction};
-#[cfg(not(feature = "index-gc"))]
-use super::gc_allocator::gc_values_freed_total;
-#[cfg(not(feature = "index-gc"))]
-use super::gc_allocator::{maybe_async_gc, request_gc};
 use super::task_scheduler::TaskSchedulerSingleton;
 use super::work_pool::WorkPool;
 
@@ -50,8 +45,6 @@ const COUNTER_SYNC_INTERVAL_MS: u64 = 200;
 /// When exceeded, the cron sets the flag so the trampoline's `maybe_gc()`
 /// triggers a GC cycle at the next check.
 const ALLOC_RATE_THRESHOLD: u64 = 100_000;
-
-// --- GC Pool Hill Climbing Constants ---
 
 // --- Cron Worker Pool Constants ---
 
@@ -82,20 +75,6 @@ pub fn cron_work_pool() -> Arc<WorkPool> {
     }))
 }
 
-// --- GC Pool Hill Climbing Constants ---
-
-/// EMA smoothing factor for GC alloc/free rate ratio (half-life ~3.1 samples = ~310ms).
-#[cfg(not(feature = "index-gc"))]
-const GC_EMA_ALPHA: f64 = 0.2;
-
-/// Cooldown period for GC hill climber (7 ticks = ~700ms settling time).
-#[cfg(not(feature = "index-gc"))]
-const GC_COOLDOWN_PERIOD: u32 = 7;
-
-/// Minimum improvement required for GC hill climber to accept a perturbation.
-#[cfg(not(feature = "index-gc"))]
-const GC_IMPROVEMENT_THRESHOLD: f64 = 0.05;
-
 // ============================================================================
 // MonitorState — Per-Poll Tracking for Memory Monitor
 // ============================================================================
@@ -110,47 +89,18 @@ struct MonitorState {
     /// If this hasn't advanced, GC lifecycle is unreachable and backpressure
     /// must not be escalated (would cause permanent throttling).
     prev_reachable_counter: u64,
-    /// Previous GC freed count for delta computation.
-    #[cfg(not(feature = "index-gc"))]
-    prev_freed_count: u64,
-    /// EMA of the alloc/free rate ratio.
-    /// Ratio > 1.0 means allocation outpaces GC → need more workers.
-    /// Ratio < 1.0 means GC is keeping up → may reduce workers.
-    #[cfg(not(feature = "index-gc"))]
-    ema_alloc_free_ratio: Ema,
-    /// Hill climber for GC pool adaptive sizing.
-    #[cfg(not(feature = "index-gc"))]
-    gc_climber: HillClimber,
 }
 
 impl MonitorState {
-    /// Create a new MonitorState with explicit pool parameters.
-    ///
-    /// Both tests and production pass explicit worker params.
-    /// Tests pass hardcoded values without initializing the global pool.
-    fn with_params(_min_workers: usize, _max_workers: usize, _active_workers: usize) -> Self {
+    /// Create a new MonitorState. The index collector does not size an
+    /// adaptive pool, so the monitor only tracks alloc-rate / backpressure
+    /// inputs across polls.
+    fn new() -> Self {
         Self {
             prev_alloc_count: 0,
             prev_poll_time: Instant::now(),
             prev_reachable_counter: 0,
-            #[cfg(not(feature = "index-gc"))]
-            prev_freed_count: 0,
-            #[cfg(not(feature = "index-gc"))]
-            ema_alloc_free_ratio: Ema::new(GC_EMA_ALPHA),
-            #[cfg(not(feature = "index-gc"))]
-            gc_climber: HillClimber::new(
-                GC_COOLDOWN_PERIOD,
-                GC_IMPROVEMENT_THRESHOLD,
-                _min_workers,
-                _max_workers,
-                _active_workers,
-            ),
         }
-    }
-
-    /// Create a new MonitorState (the index collector does not size an adaptive pool).
-    fn new() -> Self {
-        Self::with_params(0, 0, 0)
     }
 }
 
@@ -254,10 +204,12 @@ pub fn spawn_gc_cron(
 // Task Implementations
 // ============================================================================
 
-/// Memory monitor task: reads atomic counters and calls `request_gc()` if
-/// allocation rate exceeds threshold or committed bytes exceed GC threshold.
+/// Memory monitor task: reads atomic counters, computes a `should_gc`
+/// decision and sets the allocator backpressure level. The index collector
+/// is driven by the safepoint watermark (not cron), so `should_gc` is only
+/// returned (for the unit tests' TOCTOU-free check), not acted on here.
 ///
-/// Two complementary triggers:
+/// Two complementary decision inputs:
 /// - **Rate-based**: High allocation velocity (burst detection)
 /// - **Threshold-based**: Absolute memory pressure (steady-state detection)
 fn execute_memory_monitor(
@@ -317,23 +269,10 @@ fn execute_memory_monitor(
     monitor.prev_reachable_counter = current_reachable;
     super::gc_allocator::set_backpressure_level(bp_level);
 
-    // F4/CronProducerErasure: the monitor decision remains common, but the legacy
-    // request_gc producer exists only in the slab opt-out. The index build's
-    // dedicated collector is driven by the safepoint watermark, not cron.
-    // `should_gc` is still RETURNED below for the unit tests' TOCTOU check.
-    #[cfg(not(feature = "index-gc"))]
-    if should_gc {
-        // Phase 9: set the flag AND immediately attempt async GC from the
-        // cron thread. `maybe_async_gc` honors the purely-async mandate —
-        // it does NOT require `ACTIVE_EVALUATORS == 0`, so it can fire
-        // mid-eval. Eliminates the request/respond ping-pong where the
-        // trampoline would have to enter a safepoint to consume the flag.
-        request_gc();
-        let _ = maybe_async_gc();
-    }
-
-    // Return whether GC was requested (used by unit tests to avoid TOCTOU
-    // races on the global GC_REQUESTED flag).
+    // CronProducerErasure: the monitor computes the decision but does NOT
+    // trigger collection — the dedicated CESK collector is driven by the
+    // safepoint watermark, not cron. `should_gc` is RETURNED for the unit
+    // tests' TOCTOU-free check on the decision.
     let result = should_gc;
 
     monitor.prev_alloc_count = current_alloc_count;
@@ -498,16 +437,14 @@ mod tests {
         singleton.shutdown();
     }
 
-    /// Test that high allocation rate triggers the correct collector signal.
-    ///
-    /// Slab still uses the legacy cron producer and is checked through the
-    /// monotonic `gc_requests_total()` counter rather than the transient
-    /// `GC_REQUESTED` flag. Index-gc suppresses that producer by design: the
-    /// dedicated CESK collector is driven by the safepoint watermark, so a
-    /// driverless cron request would violate the single-regime proof.
+    /// Test that a high allocation rate does NOT drive a cron-side GC request
+    /// in the index build: the dedicated CESK collector is driven by the
+    /// safepoint watermark, so a driverless cron request would violate the
+    /// single-regime proof. Checked through the monotonic `gc_requests_total()`
+    /// counter rather than the transient `GC_REQUESTED` flag.
     #[test]
     fn test_gc_requested_on_high_alloc_rate() {
-        use super::super::gc_allocator::{dedicated_gc_enabled, gc_requests_total};
+        use super::super::gc_allocator::gc_requests_total;
 
         // Capture baseline count before spawning the cron (other parallel
         // tests may have incremented it; we only care about the delta).
@@ -538,24 +475,13 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
 
-        if dedicated_gc_enabled() {
-            assert!(
-                !observed,
-                "index-gc dedicated collector must suppress legacy cron \
-                 request_gc() producer (baseline {}, current {})",
-                baseline,
-                gc_requests_total(),
-            );
-        } else {
-            assert!(
-                observed,
-                "gc_requests_total() should advance after high allocation rate \
-                 (baseline {}, current {}) — slab cron monitor must call request_gc() \
-                 when alloc rate exceeds ALLOC_RATE_THRESHOLD",
-                baseline,
-                gc_requests_total(),
-            );
-        }
+        assert!(
+            !observed,
+            "index-gc dedicated collector must suppress any cron-driven \
+             request_gc() producer (baseline {}, current {})",
+            baseline,
+            gc_requests_total(),
+        );
 
         singleton.shutdown();
     }
@@ -566,7 +492,7 @@ mod tests {
         let alloc_count = AtomicU64::new(0);
         let committed = AtomicUsize::new(0);
         let gc_threshold = AtomicUsize::new(1024 * 1024 * 1024); // 1 GB — won't trigger
-        let mut monitor = MonitorState::with_params(1, 2, 1);
+        let mut monitor = MonitorState::new();
 
         // First poll: set baseline
         execute_memory_monitor_for_test(&committed, &alloc_count, &gc_threshold, &mut monitor);
@@ -588,7 +514,7 @@ mod tests {
         let alloc_count = AtomicU64::new(0);
         let committed = AtomicUsize::new(0);
         let gc_threshold = AtomicUsize::new(1024 * 1024 * 1024); // 1 GB — won't trigger
-        let mut monitor = MonitorState::with_params(1, 2, 1);
+        let mut monitor = MonitorState::new();
 
         // First poll: set baseline
         execute_memory_monitor_for_test(&committed, &alloc_count, &gc_threshold, &mut monitor);
@@ -610,7 +536,7 @@ mod tests {
         let alloc_count = AtomicU64::new(0);
         let committed = AtomicUsize::new(8 * 1024 * 1024); // 8 MB committed
         let gc_threshold = AtomicUsize::new(4 * 1024 * 1024); // 4 MB threshold
-        let mut monitor = MonitorState::with_params(1, 2, 1);
+        let mut monitor = MonitorState::new();
 
         // First poll: committed (8 MB) >= gc_threshold (4 MB) should trigger
         let triggered =
@@ -628,7 +554,7 @@ mod tests {
         let alloc_count = AtomicU64::new(0);
         let committed = AtomicUsize::new(2 * 1024 * 1024); // 2 MB committed
         let gc_threshold = AtomicUsize::new(4 * 1024 * 1024); // 4 MB threshold
-        let mut monitor = MonitorState::with_params(1, 2, 1);
+        let mut monitor = MonitorState::new();
 
         // committed (2 MB) < gc_threshold (4 MB) should NOT trigger
         let triggered =

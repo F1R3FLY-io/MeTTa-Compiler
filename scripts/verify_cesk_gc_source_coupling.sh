@@ -325,6 +325,20 @@ line_no "tla/JitIsFunctionPointerDecode.tla" "PointerInspectionMatchesStore ==" 
 line_no "tla/JitIsFunctionPointerDecode.tla" "NoSlabDerefInIndex ==" >/dev/null
 line_no "tla/JitIsFunctionPointerDecode.tla" "SlabDerefRequiresSlabPointer ==" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" 'run_rocq "formal/rocq/gc/JitIsFunctionPointerDecode.v"' >/dev/null
+line_no "formal/rocq/gc/JitPayloadConversionStorePolicy.v" "Require Import DefaultStoreSelection." >/dev/null
+line_no "formal/rocq/gc/JitPayloadConversionStorePolicy.v" "Definition cfg_split_payload_decode" >/dev/null
+line_no "formal/rocq/gc/JitPayloadConversionStorePolicy.v" "Definition slab_deref_payload_decode" >/dev/null
+line_no "formal/rocq/gc/JitPayloadConversionStorePolicy.v" "Definition inline_deref_payload_decode" >/dev/null
+line_no "formal/rocq/gc/JitPayloadConversionStorePolicy.v" "Theorem cfg_split_payload_decode_matches_valid_store" >/dev/null
+line_no "formal/rocq/gc/JitPayloadConversionStorePolicy.v" "Theorem emitted_payload_slab_deref_requires_slab_store" >/dev/null
+line_no "formal/rocq/gc/JitPayloadConversionStorePolicy.v" "Theorem index_payload_never_dereferences_slab" >/dev/null
+line_no "formal/rocq/gc/JitPayloadConversionStorePolicy.v" "Theorem slab_deref_payload_shape_violates_default_index_heap" >/dev/null
+line_no "formal/rocq/gc/JitPayloadConversionStorePolicy.v" "Theorem inline_payload_deref_shape_violates_no_heap_inspection" >/dev/null
+line_no "tla/JitPayloadConversionStorePolicy.tla" "InlinePayloadNoHeapInspect ==" >/dev/null
+line_no "tla/JitPayloadConversionStorePolicy.tla" "PayloadDecodeMatchesStore ==" >/dev/null
+line_no "tla/JitPayloadConversionStorePolicy.tla" "NoSlabDerefInIndex ==" >/dev/null
+line_no "tla/JitPayloadConversionStorePolicy.tla" "SlabDerefRequiresSlabStore ==" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" 'run_rocq "formal/rocq/gc/JitPayloadConversionStorePolicy.v"' >/dev/null
 line_no "formal/rocq/gc/ArenaAddrDecodeErasure.v" "Require Import DefaultStoreSelection." >/dev/null
 line_no "formal/rocq/gc/ArenaAddrDecodeErasure.v" "Definition guarded_arena_addr" >/dev/null
 line_no "formal/rocq/gc/ArenaAddrDecodeErasure.v" "Definition cfg_split_arena_addr" >/dev/null
@@ -414,6 +428,54 @@ assert_after_before \
   "if crate::backend::models::metta_value::gc_mode_is_index() {" \
   "from_inner_ptr(" \
   "match &*ptr"
+line_no "src/backend/bytecode/jit/runtime/helpers.rs" "formal/rocq/gc/JitPayloadConversionStorePolicy.v" >/dev/null
+assert_after_before \
+  "src/backend/bytecode/jit/runtime/helpers.rs" \
+  "pub fn metta_to_jit" \
+  "JitValue::from_inner_ptr(val.inner_ptr())" \
+  "pub fn make_jit_error"
+assert_after_before \
+  "src/backend/bytecode/jit/runtime/helpers.rs" \
+  "pub fn make_jit_error" \
+  "error_val.inner_ptr()" \
+  "pub fn make_jit_error_with_details"
+assert_after_before \
+  "src/backend/bytecode/jit/runtime/helpers.rs" \
+  "pub fn make_jit_error_with_details" \
+  "error_val.inner_ptr()" \
+  "pub fn value_to_jit_generic"
+assert_after_before \
+  "src/backend/bytecode/jit/runtime/helpers.rs" \
+  "pub unsafe fn jit_to_value_generic" \
+  "crate::backend::models::metta_value::gc_mode_is_index()" \
+  "V::from_inner_ptr(ptr)"
+line_no "src/backend/bytecode/jit/types/value.rs" "formal/rocq/gc/JitPayloadConversionStorePolicy.v" >/dev/null
+assert_after_before \
+  "src/backend/bytecode/jit/types/value.rs" \
+  "pub unsafe fn to_metta" \
+  "TAG_PTR => {" \
+  "TAG_ERROR => {"
+assert_after_before \
+  "src/backend/bytecode/jit/types/value.rs" \
+  "TAG_PTR => {" \
+  "MettaValue::from_addr(" \
+  "TAG_ERROR => {"
+assert_after_before \
+  "src/backend/bytecode/jit/types/value.rs" \
+  "TAG_PTR => {" \
+  "MettaValue::from_inner(&*ptr)" \
+  "TAG_ERROR => {"
+assert_after_before \
+  "src/backend/bytecode/jit/types/value.rs" \
+  "TAG_ERROR => {" \
+  "MettaValue::from_addr(" \
+  "TAG_ATOM => {"
+assert_after_before \
+  "src/backend/bytecode/jit/types/value.rs" \
+  "TAG_ERROR => {" \
+  "MettaValue::from_inner(&*ptr)" \
+  "TAG_ATOM => {"
+line_no "src/backend/bytecode/jit/runtime/state_ops.rs" "formal/rocq/gc/JitPayloadConversionStorePolicy.v" >/dev/null
 assert_after_before \
   "src/backend/models/metta_value.rs" \
   "pub(crate) fn gc_mode_is_index() -> bool" \
@@ -900,6 +962,7 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "JitValueCreationStoreSelection.
 assert_count "scripts/verify_cesk_gc_formal.sh" "JitTypeOpsStoreSelection.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "JitLongBoxStoreSelection.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "JitIsFunctionPointerDecode.v" "1"
+assert_count "scripts/verify_cesk_gc_formal.sh" "JitPayloadConversionStorePolicy.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDynamicEvalGate.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronStartupDelivery.v" "1"
@@ -1108,6 +1171,7 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "JitValueCreationStoreSelection.
 assert_count "scripts/verify_cesk_gc_formal.sh" "JitTypeOpsStoreSelection.tla" "4"
 assert_count "scripts/verify_cesk_gc_formal.sh" "JitLongBoxStoreSelection.tla" "5"
 assert_count "scripts/verify_cesk_gc_formal.sh" "JitIsFunctionPointerDecode.tla" "5"
+assert_count "scripts/verify_cesk_gc_formal.sh" "JitPayloadConversionStorePolicy.tla" "6"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDynamicEvalGate.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronStartupDelivery.tla" "4"

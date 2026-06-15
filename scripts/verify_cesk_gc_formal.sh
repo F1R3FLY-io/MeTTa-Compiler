@@ -231,6 +231,7 @@ run_rocq "formal/rocq/gc/JitValueCreationStoreSelection.v"
 run_rocq "formal/rocq/gc/JitTypeOpsStoreSelection.v"
 run_rocq "formal/rocq/gc/JitLongBoxStoreSelection.v"
 run_rocq "formal/rocq/gc/JitIsFunctionPointerDecode.v"
+run_rocq "formal/rocq/gc/JitPayloadConversionStorePolicy.v"
 run_rocq "formal/rocq/gc/ArenaAddrDecodeErasure.v"
 run_rocq "formal/rocq/gc/CfgGuardErasure.v"
 run_rocq "formal/rocq/gc/InnerPtrDecodeErasure.v"
@@ -339,6 +340,18 @@ run_tlc "jit_is_function_index_slab_deref_bug" "JitIsFunctionPointerDecode.tla" 
   fail "The invariant of PointerInspectionMatchesStore is equal to FALSE"
 run_tlc "jit_is_function_nonptr_deref_bug" "JitIsFunctionPointerDecode.tla" "MC_JitIsFunctionPointerDecode_nonptr_deref_bug.cfg" \
   fail "The invariant of NonPointerNoInspect is equal to FALSE"
+run_tlc "jit_payload_conversion_index_heap_correct" "JitPayloadConversionStorePolicy.tla" "MC_JitPayloadConversionStorePolicy_index_heap_correct.cfg" \
+  pass ""
+run_tlc "jit_payload_conversion_index_error_correct" "JitPayloadConversionStorePolicy.tla" "MC_JitPayloadConversionStorePolicy_index_error_correct.cfg" \
+  pass ""
+run_tlc "jit_payload_conversion_index_inline_correct" "JitPayloadConversionStorePolicy.tla" "MC_JitPayloadConversionStorePolicy_index_inline_correct.cfg" \
+  pass ""
+run_tlc "jit_payload_conversion_legacy_slab_heap_correct" "JitPayloadConversionStorePolicy.tla" "MC_JitPayloadConversionStorePolicy_legacy_slab_heap_correct.cfg" \
+  pass ""
+run_tlc "jit_payload_conversion_index_slab_deref_bug" "JitPayloadConversionStorePolicy.tla" "MC_JitPayloadConversionStorePolicy_index_slab_deref_bug.cfg" \
+  fail "The invariant of PayloadDecodeMatchesStore is equal to FALSE"
+run_tlc "jit_payload_conversion_inline_deref_bug" "JitPayloadConversionStorePolicy.tla" "MC_JitPayloadConversionStorePolicy_inline_deref_bug.cfg" \
+  fail "The invariant of InlinePayloadNoHeapInspect is equal to FALSE"
 run_tlc "scheduler_direct_fanout_wavefront_independent" "SchedulerDirectFanoutWavefrontRefinement.tla" "MC_SchedulerDirectFanoutWavefrontRefinement_independent.cfg" \
   pass ""
 run_tlc "scheduler_direct_fanout_wavefront_dependent_missing_gate" "SchedulerDirectFanoutWavefrontRefinement.tla" "MC_SchedulerDirectFanoutWavefrontRefinement_dependent_missing_gate.cfg" \

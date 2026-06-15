@@ -1385,6 +1385,15 @@ facts the proofs rely on:
   TLC positives preserve the decode policy; negative discriminators reject an
   index build that slab-dereferences a TAG_PTR payload and any non-pointer path
   that performs a dereference.
+- Generic JIT payload conversion store policy
+  (`formal/rocq/gc/JitPayloadConversionStorePolicy.v`,
+  `tla/JitPayloadConversionStorePolicy.tla`, 2026-06-15) — proves the
+  `metta_to_jit` / `jit_to_value_generic` / `JitValue::to_metta` boundary keeps
+  payload decoding selected by the compiled store: index heap/error payloads
+  reconstruct arena handles, legacy slab heap/error payloads may dereference
+  slab pointers, and inline values perform no heap inspection. TLC positives
+  preserve heap, error, inline, and legacy-slab cases; negative discriminators
+  reject an index slab-dereference and an inline heap-inspection path.
 - Cron startup delivery (`formal/rocq/gc/CronStartupDelivery.v`,
   `tla/CronStartupDelivery.tla`, 2026-06-14) — proves the cron ready-channel
   startup contract beyond generic endpoint pairing: after the caller observes

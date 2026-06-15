@@ -129,10 +129,11 @@ impl JitValue {
         JitValue(TAG_EMPTY)
     }
 
-    /// Create a TAG_PTR value from a pointer to slab-allocated MettaValueInner.
+    /// Create a TAG_PTR value from an active-store inner payload.
     ///
-    /// The pointer must point to valid, slab-allocated MettaValueInner data
-    /// with 'static lifetime (managed by the GC).
+    /// In legacy slab builds the payload is a valid `MettaValueInner` pointer.
+    /// In index-gc builds the payload is the arena `Addr` bits returned by
+    /// `inner_ptr`.
     #[inline(always)]
     pub fn from_inner_ptr(ptr: *const MettaValueInner) -> Self {
         let addr = ptr as u64;
@@ -147,7 +148,7 @@ impl JitValue {
         JitValue(TAG_PTR | (addr & PAYLOAD_MASK))
     }
 
-    /// Create an error value from a pointer to slab-allocated MettaValueInner.
+    /// Create an error value from an active-store inner payload.
     #[inline(always)]
     pub fn from_error_ptr(ptr: *const MettaValueInner) -> Self {
         let addr = ptr as u64;
@@ -302,17 +303,17 @@ impl JitValue {
         (self.0 & 1) != 0
     }
 
-    /// Extract the pointer to slab-allocated MettaValueInner.
+    /// Extract the active-store inner payload.
     ///
     /// # Safety
-    /// The caller must ensure the pointer is still valid (slab-managed).
+    /// The caller must decode the payload according to the active store.
     #[inline(always)]
     pub fn as_inner_ptr(self) -> *const MettaValueInner {
         debug_assert!(self.is_heap(), "JitValue is not a TAG_PTR value");
         (self.0 & PAYLOAD_MASK) as *const MettaValueInner
     }
 
-    /// Extract error pointer to slab-allocated MettaValueInner.
+    /// Extract the active-store error payload.
     #[inline(always)]
     pub fn as_error_ptr(self) -> *const MettaValueInner {
         debug_assert!(self.is_error(), "JitValue is not an error");
@@ -367,10 +368,13 @@ impl JitValue {
         }
     }
 
-    /// Convert JitValue back to MettaValue
+    /// Convert JitValue back to MettaValue.
+    ///
+    /// The TAG_PTR/TAG_ERROR store policy is verified by
+    /// `formal/rocq/gc/JitPayloadConversionStorePolicy.v`.
     ///
     /// # Safety
-    /// For heap pointers, the referenced MettaValue must be valid
+    /// For heap payloads, the encoded value must belong to the active store.
     pub unsafe fn to_metta(self) -> MettaValue {
         // Validate tag before any operations
         debug_assert!(

@@ -4,6 +4,9 @@
 //! - new_state - Create a new mutable state cell
 //! - get_state - Get the current value from a state cell
 //! - change_state - Change the value of a state cell
+//!
+//! State handles cross the JIT boundary through the generic payload conversion
+//! policy verified in `formal/rocq/gc/JitPayloadConversionStorePolicy.v`.
 
 use super::helpers::{make_jit_error, make_jit_error_with_details, metta_to_jit};
 use crate::backend::bytecode::jit::types::{JitContext, JitValue};
@@ -43,7 +46,7 @@ pub unsafe extern "C" fn jit_runtime_new_state(
         return make_jit_error("new-state: environment not available");
     }
 
-    // Cast env_ptr to Environment (MettaEnvironment = GenericEnvironment<MettaValue, GcFactory>)
+    // Cast env_ptr to the active-store MettaEnvironment.
     use crate::backend::bytecode::MettaEnvironment;
     let env = &mut *(ctx_ref.env_ptr as *mut MettaEnvironment);
 
@@ -54,7 +57,7 @@ pub unsafe extern "C" fn jit_runtime_new_state(
     // Create state in environment
     let state_id = env.create_state(&metta_val);
 
-    // Return State(id) as slab-allocated MettaValue
+    // Return State(id) through the mode-aware JIT payload path.
     let state_val = MettaValue::State(state_id);
     metta_to_jit(&state_val).to_bits()
 }
@@ -108,7 +111,7 @@ pub unsafe extern "C" fn jit_runtime_get_state(
         return cached_value.to_bits();
     }
 
-    // Cache miss: fetch from Environment (MettaEnvironment = GenericEnvironment<MettaValue, GcFactory>)
+    // Cache miss: fetch from the active-store MettaEnvironment.
     use crate::backend::bytecode::MettaEnvironment;
     let env = &*(ctx_ref.env_ptr as *const MettaEnvironment);
 
@@ -181,7 +184,7 @@ pub unsafe extern "C" fn jit_runtime_change_state(
     let jit_new_val = JitValue::from_raw(new_value);
     let metta_new_val = jit_new_val.to_metta();
 
-    // Cast env_ptr to Environment (MettaEnvironment = GenericEnvironment<MettaValue, GcFactory>)
+    // Cast env_ptr to the active-store MettaEnvironment.
     use crate::backend::bytecode::MettaEnvironment;
     let env = &mut *(ctx_ref.env_ptr as *mut MettaEnvironment);
 

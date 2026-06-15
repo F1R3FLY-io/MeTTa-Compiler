@@ -8,9 +8,10 @@
 //!
 //! ## Pointer Semantics
 //!
-//! TAG_PTR payloads store `*const MettaValueInner` — pointers to slab-allocated
-//! inner data managed by the GC. No Box allocations are needed since the inner
-//! data has 'static lifetime.
+//! TAG_PTR/TAG_ERROR payloads are store-shaped. Legacy slab builds carry
+//! `*const MettaValueInner`; index-gc builds carry arena `Addr` bits in the
+//! pointer-width payload. The decode policy is pinned by
+//! `formal/rocq/gc/JitPayloadConversionStorePolicy.v`.
 
 use crate::backend::bytecode::jit::types::{JitValue, PAYLOAD_MASK, TAG_LONG, TAG_PTR};
 use crate::backend::models::{
@@ -52,13 +53,14 @@ pub fn box_long(n: i64) -> u64 {
 /// Convert a MettaValue to a JitValue.
 ///
 /// For simple types (Long, Bool, Unit), creates a NaN-boxed value directly.
-/// For complex types, stores the inner pointer (slab-allocated, 'static).
+/// For complex types, stores the mode-shaped inner payload produced by
+/// `inner_ptr`.
 pub fn metta_to_jit(val: &MettaValue) -> JitValue {
     match val.view() {
         ValueView::Long(n) => JitValue::from_long(n),
         ValueView::Bool(b) => JitValue::from_bool(b),
         ValueView::Unit => JitValue::unit(),
-        // Store pointer to slab-allocated inner data (no Box needed)
+        // Store the mode-shaped heap payload (legacy pointer or index Addr).
         _ => JitValue::from_inner_ptr(val.inner_ptr()),
     }
 }
@@ -69,7 +71,8 @@ pub fn metta_to_jit(val: &MettaValue) -> JitValue {
 
 /// Helper to create an error JitValue with a message.
 ///
-/// Creates a slab-allocated Error value and returns it as a NaN-boxed TAG_PTR.
+/// Creates an Error value in the active store and returns its mode-shaped
+/// payload as a NaN-boxed TAG_PTR.
 pub fn make_jit_error(msg: &str) -> u64 {
     let error_val = MettaValue::Error(MettaValue::Unit(), MettaValue::String(msg));
     TAG_PTR | (error_val.inner_ptr() as u64 & PAYLOAD_MASK)
@@ -77,7 +80,8 @@ pub fn make_jit_error(msg: &str) -> u64 {
 
 /// Helper to create an error JitValue with message and details.
 ///
-/// Creates a slab-allocated Error value and returns it as a NaN-boxed TAG_PTR.
+/// Creates an Error value in the active store and returns its mode-shaped
+/// payload as a NaN-boxed TAG_PTR.
 pub fn make_jit_error_with_details(msg: &str, details: &str) -> u64 {
     let error_val = MettaValue::Error(MettaValue::Atom(details), MettaValue::String(msg));
     TAG_PTR | (error_val.inner_ptr() as u64 & PAYLOAD_MASK)
@@ -90,7 +94,8 @@ pub fn make_jit_error_with_details(msg: &str, details: &str) -> u64 {
 /// Convert a generic value to a NaN-boxed JitValue.
 ///
 /// For primitive types (Long, Bool, Unit), creates a NaN-boxed value directly.
-/// For complex types, stores a pointer to the slab-allocated MettaValueInner.
+/// For complex types, stores the active-store payload for the value's inner
+/// representation.
 ///
 /// # Type Parameters
 /// - `V`: The value type implementing `MettaValueTrait`
@@ -118,10 +123,8 @@ where
         return JitValue::empty();
     }
 
-    // Complex types: store a pointer to the slab-allocated MettaValueInner.
-    // MettaValue.inner_ref() is &'static MettaValueInner, so inner_ptr() gives
-    // a persistent pointer that survives across function returns.
-    // The GC handles memory management — no cleanup needed here.
+    // Complex types: store the active-store heap payload. In slab mode this is
+    // a stable inner pointer; in index mode it is the arena Addr bits.
     let ptr = val.inner_ptr();
     JitValue::from_inner_ptr(ptr)
 }
@@ -129,7 +132,7 @@ where
 /// Convert a JitValue back to a generic value using a factory.
 ///
 /// # Safety
-/// - TAG_PTR payloads must point to valid slab-allocated MettaValueInner data
+/// - TAG_PTR payloads must have been produced for the active store
 ///
 /// # Type Parameters
 /// - `V`: The value type implementing `MettaValueTrait`

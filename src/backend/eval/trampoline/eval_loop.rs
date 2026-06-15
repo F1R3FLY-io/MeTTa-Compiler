@@ -614,6 +614,26 @@ fn min_parallel_branches() -> usize {
     })
 }
 
+fn independent_wavefront_admits_direct_fanout(
+    cost_classes: &[crate::backend::scheduler::CostClass],
+) -> bool {
+    if cost_classes.len() < 2 {
+        return false;
+    }
+
+    let mut tasks = Vec::with_capacity(cost_classes.len());
+    for (index, &cost_class) in cost_classes.iter().enumerate() {
+        tasks.push(
+            crate::backend::scheduler::wavefront::WavefrontTask::independent(index, cost_class),
+        );
+    }
+
+    let schedule = crate::backend::scheduler::wavefront::compute_wavefront(&tasks);
+    schedule.total_tasks == cost_classes.len()
+        && schedule.is_fully_parallel()
+        && schedule.max_parallelism() == cost_classes.len()
+}
+
 fn depth_budgets() -> &'static DepthBudgets {
     DEPTH_BUDGETS.get_or_init(|| {
         let cpus = num_cpus::get() as u32;
@@ -1587,10 +1607,13 @@ fn dispatch_rule_matches<C: EvalContext>(
 
     let wfst_allows_parallel = if matches.len() >= min_parallel_branches() {
         let scheduler = crate::backend::scheduler::global_scheduler();
-        let degree_ok = matches.iter().any(|(rhs, _)| {
-            let (_, action) = scheduler.classify_and_transduce(rhs);
-            action.parallelism_degree > 1
-        });
+        let mut cost_classes = Vec::with_capacity(matches.len());
+        let mut degree_ok = false;
+        for (rhs, _) in &matches {
+            let (class, action) = scheduler.classify_and_transduce(rhs);
+            degree_ok |= action.parallelism_degree > 1;
+            cost_classes.push(class);
+        }
         // H2 (2026-05-05): branch-purity gate per spec §5.6.1 [N, sub-profile ST].
         // Side-effecting branches (containing add-atom/remove-atom/change-state!/
         // bind!/...) must serialize to preserve HE branch-ordering semantics.
@@ -1606,7 +1629,7 @@ fn dispatch_rule_matches<C: EvalContext>(
         let all_pure = matches.iter().all(|(rhs, _)| {
             !crate::backend::scheduler::classification::body_blocks_parallel_dispatch(rhs, 8)
         });
-        degree_ok && all_pure
+        degree_ok && all_pure && independent_wavefront_admits_direct_fanout(&cost_classes)
     } else {
         false
     };
@@ -7370,10 +7393,13 @@ fn eval_trampoline_inner<C: EvalContext>(
                             // justify the dispatch overhead.
                             let wfst_allows = if alternatives.len() >= 2 {
                                 let scheduler = crate::backend::scheduler::global_scheduler();
-                                let degree_ok = alternatives.iter().any(|alt| {
-                                    let (_, action) = scheduler.classify_and_transduce(alt);
-                                    action.parallelism_degree > 1
-                                });
+                                let mut cost_classes = Vec::with_capacity(alternatives.len());
+                                let mut degree_ok = false;
+                                for alt in &alternatives {
+                                    let (class, action) = scheduler.classify_and_transduce(alt);
+                                    degree_ok |= action.parallelism_degree > 1;
+                                    cost_classes.push(class);
+                                }
                                 // H2: branch-purity gate (spec §5.6.1).
                                 // Phase 10.D: state-mutation only by
                                 // default; opt-in I/O strictness via
@@ -7381,7 +7407,9 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 let all_pure = alternatives.iter().all(|alt| {
                                     !crate::backend::scheduler::classification::body_blocks_parallel_dispatch(alt, 8)
                                 });
-                                degree_ok && all_pure
+                                degree_ok
+                                    && all_pure
+                                    && independent_wavefront_admits_direct_fanout(&cost_classes)
                             } else {
                                 false
                             };

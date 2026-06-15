@@ -808,6 +808,11 @@ capped debug Robot replay after the conditional canary produced the expected fri
   that variant as `scheduler_wavefront_deferred_ready` and expects `NoReadyTaskDeferred` to fail; source coupling pins
   the initial in-degree-zero scan and the `in_degree == 0` dependent insertion that realize the maximal ready-set
   property in Rust.
+- 2026-06-15 Wavefront production activation: the production direct-fanout gates now construct independent
+  `WavefrontTask`s from the classified branch/item cost classes, call `compute_wavefront()`, and admit direct
+  `parallel_dispatch()` only when the verified scheduler returns a full-width single wave. This closes the prior
+  activation audit gap without claiming dependency-bearing instruction-DAG reordering; those workloads still require a
+  complete data/effect-edge builder before entering the general wavefront path.
 - 2026-06-14 Effect-conflict completeness increment: `SchedulerEffectConflictCompleteness.v` now proves that
   dependency order plus conflict-edge coverage implies same-wave conflict freedom, and that a same-wave conflict rejects
   a complete dependency/order pair. `SchedulerEffectConflictCompleteness.tla` adds positive complete-conflict and

@@ -231,12 +231,12 @@ dispatch pipeline:
 4. Fanout admission uses the transducer degree and runtime budget gates.
 5. Queue pressure and depth quota prevent over-parallelization.
 
-Current production fanout guarantee: admitted pure fanout dispatches every
-branch/item slot directly through `parallel_dispatch()` or
-`parallel_collapse_dispatch()`. `compute_wavefront()` is verified as a
-scheduler-library primitive for dependency-DAG grouping, but the 2026-06-14
-activation audit found no production caller; it is not currently an active
-production fanout stage.
+Current production fanout guarantee: admitted pure fanout first constructs an
+independent wavefront over the classified branch/item set and requires the
+verified builder to return a full-width single wave. It then dispatches every
+slot directly through `parallel_dispatch()` or `parallel_collapse_dispatch()`.
+Dependency-bearing instruction DAGs still require a complete data/effect edge
+builder before they may use the general wavefront path.
 
 The formal lane covers the main scheduler obligations:
 
@@ -398,7 +398,7 @@ task is ready for wave k and not already assigned
 all tasks independent
   -> all tasks share wave 0
 production direct rule-match fanout
-  -> valid wavefront refinement only for the all-independent single-wave case
+  -> computes the all-independent single-wave schedule before direct dispatch
 dependency-bearing instruction DAG
   -> must use complete dependency/effect edges before claiming wavefront reorder
 malformed dependency graph or unresolved cycle
@@ -437,8 +437,11 @@ partial-dispatch negative violates `DirectMatchesWavefrontMaxParallelism`.
 
 The source-coupling check pins the corresponding Kahn-loop facts:
 
-- `wavefront.rs` states that production direct fanout implements only the
-  all-independent refinement without calling `compute_wavefront()`.
+- `eval_loop.rs` constructs independent `WavefrontTask`s from classified cost
+  classes, calls `compute_wavefront()`, and admits direct fanout only when the
+  returned schedule is a full-width single wave.
+- `wavefront.rs` states that dependency-bearing instruction DAGs must call the
+  general wavefront builder with complete data/effect edges.
 - Initial in-degree-zero tasks are pushed into the current wave.
 - Dependents whose in-degree falls to zero are pushed into the next wave.
 - Malformed task indices/dependencies and cyclic unresolved suffixes degrade to

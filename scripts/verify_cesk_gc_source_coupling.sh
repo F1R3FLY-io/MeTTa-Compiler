@@ -521,13 +521,13 @@ assert_after_before \
 assert_after_before \
   "src/backend/eval/trampoline/eval_loop.rs" \
   "let wfst_allows_parallel = if matches.len() >= min_parallel_branches() {" \
-  "let degree_ok = matches.iter().any" \
+  "let mut cost_classes = Vec::with_capacity(matches.len());" \
   "let all_pure = matches.iter().all"
 assert_after_before \
   "src/backend/eval/trampoline/eval_loop.rs" \
   "let wfst_allows_parallel = if matches.len() >= min_parallel_branches() {" \
   "let all_pure = matches.iter().all" \
-  "degree_ok && all_pure"
+  "independent_wavefront_admits_direct_fanout(&cost_classes)"
 assert_after_before \
   "src/backend/eval/trampoline/eval_loop.rs" \
   "if budget > 0 {" \
@@ -656,8 +656,24 @@ assert_after_before \
   "for task_idx in remaining {" \
   "}"
 line_no "src/backend/scheduler/wavefront.rs" "waves.push(vec![task_idx]);" >/dev/null
-line_no "src/backend/scheduler/wavefront.rs" "Production direct fanout implements this" >/dev/null
+line_no "src/backend/scheduler/wavefront.rs" "Production direct fanout calls" >/dev/null
 line_no "src/backend/scheduler/wavefront.rs" "dependency-bearing instruction DAG must call this module" >/dev/null
+line_no "src/backend/eval/trampoline/eval_loop.rs" "fn independent_wavefront_admits_direct_fanout" >/dev/null
+assert_after_before \
+  "src/backend/eval/trampoline/eval_loop.rs" \
+  "fn independent_wavefront_admits_direct_fanout" \
+  "WavefrontTask::independent" \
+  "compute_wavefront(&tasks);"
+assert_after_before \
+  "src/backend/eval/trampoline/eval_loop.rs" \
+  "let wfst_allows_parallel = if matches.len() >= min_parallel_branches() {" \
+  "independent_wavefront_admits_direct_fanout(&cost_classes)" \
+  "let budget = if cut_barrier == 0"
+assert_after_before \
+  "src/backend/eval/trampoline/eval_loop.rs" \
+  "let wfst_allows = if alternatives.len() >= 2 {" \
+  "independent_wavefront_admits_direct_fanout(&cost_classes)" \
+  "let par_budget = if wfst_allows"
 assert_after_before \
   "src/backend/scheduler/wavefront.rs" \
   "Find initial ready tasks (in-degree = 0)" \
@@ -1040,8 +1056,9 @@ line_no "formal/rocq/work_pool_stability/theories/Prelude.v" "Record WorkPoolPar
 line_no "formal/rocq/work_pool_stability/theories/ObjectiveFunction.v" "Record WorkPoolSignals" >/dev/null
 line_no "formal/rocq/work_pool_stability/theories/LyapunovConvergence.v" "Definition V (N_opt n : nat)" >/dev/null
 line_no "docs/THREADING_MODEL.md" "Current production fanout guarantee:" >/dev/null
-line_no "docs/THREADING_MODEL.md" '`compute_wavefront()` is verified as a' >/dev/null
-line_no "docs/THREADING_MODEL.md" "it is not currently an active" >/dev/null
+line_no "docs/THREADING_MODEL.md" "independent wavefront over the classified branch/item set" >/dev/null
+line_no "docs/THREADING_MODEL.md" "verified builder to return a full-width single wave" >/dev/null
+line_no "docs/THREADING_MODEL.md" "Dependency-bearing instruction DAGs still require" >/dev/null
 assert_count "scripts/verify_cesk_gc_formal.sh" "PriorityQueueAging.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationLookup.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerWavefrontParallelism.tla" "4"

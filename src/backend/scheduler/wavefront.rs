@@ -12,8 +12,9 @@
 //! ## Common Cases
 //!
 //! - **Nondeterministic rule matches**: All branches are independent → single
-//!   wave → full parallelism. Production direct fanout implements this
-//!   all-independent refinement without calling `compute_wavefront`.
+//!   wave → full parallelism. Production direct fanout calls
+//!   `compute_wavefront` on independent branch tasks and only dispatches when
+//!   the result is the full single wave.
 //! - **`let*` chains**: Each binding depends on previous → N waves of 1 task.
 //! - **`if` branches**: then/else are independent (conditional on guard) → 2 waves.
 //!

@@ -55,6 +55,10 @@ Open Scope nat_scope.
 
 Module MeTTaTron_GC_ThreadingEndToEndInterleaving.
 
+Module CronRecurring :=
+  MeTTaTron_GC_CronRecurringDispatch.
+Module CronStartup :=
+  MeTTaTron_GC_CronStartupDelivery.
 Module ActiveFanout :=
   MeTTaTron_GC_SchedulerActiveFanoutGate.
 Module DirectRefinement :=
@@ -2419,9 +2423,74 @@ Section EndToEndModel.
     cron_no_overlap s /\
     cron_stop_prevents_redispatch s.
 
+  Theorem cron_first_due_claim_sets_in_flight_via_standalone :
+    cron_in_flight (cron_first_due true) = true.
+  Proof.
+    change
+      (in_flight
+        (CronRecurring.claim_for_dispatch
+          {| in_flight := false; stop_requested := false |}) = true).
+    apply CronRecurring.dispatch_claim_sets_in_flight.
+  Qed.
+
+  Theorem cron_second_due_after_claim_requeues_via_standalone :
+    cron_due (cron_dispatch_state (cron_first_due true)) = RequeueOnly.
+  Proof.
+    change
+      (cron_due
+        (CronRecurring.claim_for_dispatch
+          {| in_flight := false; stop_requested := false |}) = RequeueOnly).
+    apply CronRecurring.due_after_claim_requeues_without_dispatch.
+    reflexivity.
+  Qed.
+
+  Theorem cron_worker_stop_final_due_drops_via_standalone :
+    forall s,
+      cron_due (cron_dispatch_state (cron_worker_complete true s)) =
+        DropRecurring.
+  Proof.
+    intros s.
+    unfold cron_worker_complete.
+    change
+      (cron_due (CronRecurring.worker_complete Stop (cron_dispatch_state s)) =
+        DropRecurring).
+    apply CronRecurring.stop_result_next_due_drops.
+  Qed.
+
+  Theorem cron_unclaimed_due_dispatches_via_standalone :
+    cron_due (cron_dispatch_state (cron_first_due false)) = Dispatch.
+  Proof.
+    change
+      (cron_due {| in_flight := false; stop_requested := false |} = Dispatch).
+    apply CronRecurring.due_without_claim_can_dispatch_again.
+  Qed.
+
+  Theorem cron_second_due_without_claim_overlaps_after_standalone_dispatch :
+    cron_due (cron_dispatch_state (cron_first_due false)) = Dispatch ->
+    cron_overlap (cron_second_due (cron_first_due false)) = true.
+  Proof.
+    intros _.
+    reflexivity.
+  Qed.
+
+  Theorem cron_worker_continue_final_due_dispatches_via_standalone :
+    forall s,
+      cron_due (cron_dispatch_state (cron_worker_complete false s)) = Dispatch.
+  Proof.
+    intros s.
+    unfold cron_worker_complete.
+    change
+      (cron_due
+        (CronRecurring.worker_complete Continue (cron_dispatch_state s)) =
+        Dispatch).
+    apply CronRecurring.continue_result_next_due_dispatches.
+  Qed.
+
   Theorem claimed_cron_dispatch_prevents_overlap :
     cron_no_overlap (cron_second_due (cron_first_due true)).
   Proof.
+    unfold cron_no_overlap, cron_second_due.
+    rewrite cron_first_due_claim_sets_in_flight_via_standalone.
     reflexivity.
   Qed.
 
@@ -2431,6 +2500,8 @@ Section EndToEndModel.
         (cron_worker_complete true
           (cron_second_due (cron_first_due true)))).
   Proof.
+    unfold cron_stop_prevents_redispatch, cron_final_due.
+    rewrite cron_worker_stop_final_due_drops_via_standalone.
     reflexivity.
   Qed.
 
@@ -2448,7 +2519,8 @@ Section EndToEndModel.
   Theorem unclaimed_cron_dispatch_exposes_overlap :
     cron_overlap (cron_second_due (cron_first_due false)) = true.
   Proof.
-    reflexivity.
+    apply cron_second_due_without_claim_overlaps_after_standalone_dispatch.
+    apply cron_unclaimed_due_dispatches_via_standalone.
   Qed.
 
   Theorem missing_cron_stop_publish_exposes_redispatch :
@@ -2457,6 +2529,8 @@ Section EndToEndModel.
         (cron_worker_complete false
           (cron_second_due (cron_first_due true)))) = true.
   Proof.
+    unfold cron_final_due.
+    rewrite cron_worker_continue_final_due_dispatches_via_standalone.
     reflexivity.
   Qed.
 
@@ -4281,9 +4355,9 @@ Section EndToEndModel.
       + split.
         * apply complete_spawn_latch_safe.
         * split.
-          -- apply complete_cron_dispatch_safe.
-          -- split.
-             ++ apply complete_startup_delivers_submitted_task.
+	          -- apply complete_cron_dispatch_safe.
+	          -- split.
+	             ++ apply CronStartup.complete_startup_delivers_submitted_task.
              ++ split.
                 ** apply complete_work_pool_envelope_safe.
                 ** split.
@@ -5050,7 +5124,7 @@ Section EndToEndModel.
       Hend.
     unfold end_to_end_safe in Hend.
     destruct Hend as [_ [_ [_ [_ [Hstartup [_ _]]]]]].
-    exact (missing_poll_path_exposes_delivery_gap Hstartup).
+    exact (CronStartup.missing_poll_path_exposes_delivery_gap Hstartup).
   Qed.
 
   Theorem missing_cron_stop_publish_exposes_end_to_end_gap :
@@ -5095,10 +5169,10 @@ Section EndToEndModel.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_startup work_pool
       active_fanout Hschedule Hgc Hstartup Hwork_pool Hactive Hend.
-    unfold end_to_end_safe, cron_dispatch_safe,
-      cron_stop_prevents_redispatch in Hend.
-    simpl in Hend.
+    unfold end_to_end_safe, cron_dispatch_safe in Hend.
     destruct Hend as [_ [_ [_ [[_ Hstop] _]]]].
+    unfold cron_stop_prevents_redispatch in Hstop.
+    rewrite missing_cron_stop_publish_exposes_redispatch in Hstop.
     discriminate Hstop.
   Qed.
 

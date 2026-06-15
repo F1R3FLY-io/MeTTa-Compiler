@@ -1328,9 +1328,14 @@ facts the proofs rely on:
   missing active-worker-root, dispatch-root, batch-root, and
   open-admission E2E discriminators now fail specifically on
   `SchedulerBoundaryComplete`, matching the standalone scheduler/GC boundary
-  model inside the composed interleaving envelope. The composed cron startup discriminator separately rejects a submitted
-  startup task when neither `CheckEvents` nor
-  `DrainChannel` polls the cron task channel.  Composed WorkPool discriminators
+  model inside the composed interleaving envelope. The composed recurring-cron
+  proof now calls the standalone `CronRecurringDispatch` theorems for
+  dispatch-claim publication, requeue-after-claim, stop-before-idle, and
+  continue-without-stop redispatch; the missing-stop E2E discriminator therefore
+  depends on the same transition contract as the standalone cron model. The
+  composed cron startup discriminator separately rejects a submitted startup
+  task when neither `CheckEvents` nor `DrainChannel` polls the cron task channel.
+  Composed WorkPool discriminators
   reject lossy startup enqueue, missing inner task-panic heartbeat publication,
   and missing outer accounting-panic catch.  The envelope now also composes
   WorkPool overflow and lifecycle accounting: the E2E model rejects uncapped

@@ -286,7 +286,9 @@ The formal lane covers the main scheduler obligations:
   `worker_ever_spawned` latch before the worker can exist, so the single-threaded
   mid-loop index-GC gate cannot stay open after eval-worker parallelism becomes
   possible.  The envelope also includes recurring-cron in-flight claims and cron
-  startup delivery, so a task submitted through the
+  startup delivery.  Its recurring-cron proof now bridges through the standalone
+  `CronRecurringDispatch` theorems for dispatch claims, requeue-after-claim,
+  stop-before-idle, and continue-without-stop redispatch.  A task submitted through the
   returned handle after the ready receiver observes startup is rejected if the
   cron event loop has no `CheckEvents` or `DrainChannel` polling path.  The same
   envelope composes WorkPool startup drain and panic isolation: startup
@@ -719,6 +721,10 @@ state.
 The active-worker-root, dispatch-root, async-batch-root, and open-admission
 E2E discriminators violate `SchedulerBoundaryComplete`, matching the standalone
 `SchedulerGcBoundary` proof contract inside the composed interleaving model.
+The composed cron discriminators call the standalone recurring-dispatch proof
+for both the positive claim path and the missing-stop negative path, so the E2E
+model is tied to the same `in_flight`/`stop_requested` transition contract as
+`CronRecurringDispatch.v`.
 The composed WorkPool discriminators additionally reject overflow spawning
 that bypasses the live-worker cap, double-unpark accounting that counts one
 parked worker twice, respawning a parked replacement without incrementing

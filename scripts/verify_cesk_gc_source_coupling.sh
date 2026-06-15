@@ -905,7 +905,22 @@ line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module ActiveFanout :=
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerDirectFanoutWavefrontRefinement" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerFanoutAdmissionCompleteness" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "CollapseFanoutAdmissionCompleteness" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module CronRecurring :=" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module CronStartup :=" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module DynamicEval :=" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "cron_first_due_claim_sets_in_flight_via_standalone" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "cron_second_due_after_claim_requeues_via_standalone" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "cron_worker_stop_final_due_drops_via_standalone" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "cron_unclaimed_due_dispatches_via_standalone" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "cron_second_due_without_claim_overlaps_after_standalone_dispatch" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "cron_worker_continue_final_due_dispatches_via_standalone" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "CronRecurring.dispatch_claim_sets_in_flight" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "CronRecurring.due_after_claim_requeues_without_dispatch" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "CronRecurring.stop_result_next_due_drops" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "CronRecurring.due_without_claim_can_dispatch_again" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "CronRecurring.continue_result_next_due_dispatches" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "CronStartup.complete_startup_delivers_submitted_task" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "CronStartup.missing_poll_path_exposes_delivery_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module WorkPoolLife :=" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module WorkPoolPanicModel :=" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module WorkPoolStartupModel :=" >/dev/null

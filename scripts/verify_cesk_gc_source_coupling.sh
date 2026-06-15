@@ -1373,10 +1373,6 @@ assert_before \
   "#[cfg(not(feature = \"index-gc\"))]" \
   "pub use gc_allocator::{collect_all_roots, register_root_provider, RootProvider};"
 assert_before \
-  "src/backend/eval/mod.rs" \
-  "#[cfg(not(feature = \"index-gc\"))]" \
-  "pub(crate) mod frame_chain;"
-assert_before \
   "src/backend/models/gc_allocator.rs" \
   "#[cfg(not(feature = \"index-gc\"))]" \
   "pub trait RootProvider: Send + Sync {"
@@ -1417,14 +1413,6 @@ assert_immediate_cfg_before_after \
   "CESK A5.3: index-gc build registers ZERO providers." \
   "pub fn try_register_env_roots<V>(" \
   "#[cfg(feature = \"index-gc\")]"
-assert_immediate_cfg_before \
-  "src/backend/eval/mod.rs" \
-  "pub(crate) mod frame_chain;" \
-  "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before \
-  "src/backend/eval/trampoline/mod.rs" \
-  "pub(crate) mod current_iter_root;" \
-  "#[cfg(not(feature = \"index-gc\"))]"
 
 assert_immediate_cfg_before "src/backend/bytecode/cache.rs" "use crate::backend::models::{register_root_provider, RootProvider};" "#[cfg(not(feature = \"index-gc\"))]"
 assert_immediate_cfg_before "src/backend/bytecode/cache.rs" "struct BytecodeCacheRoots;" "#[cfg(not(feature = \"index-gc\"))]"

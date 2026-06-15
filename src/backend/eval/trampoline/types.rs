@@ -21,14 +21,6 @@ use smallvec::SmallVec;
 
 use crate::backend::eval::cesk::coroutine::CancelToken;
 use crate::backend::eval::cesk::{ContinuationAddr, SpineStore};
-// A5.6: frame_chain is cfg-walled to the slab build (`#[cfg(not(feature = "index-gc"))]`
-// on `mod frame_chain` at eval/mod.rs). The `EvalFrameGuard` import — and the two
-// `_root_guard` fields it types below — are therefore slab-only. In the index build the
-// parallel-dispatch handles carry no frame_chain pop handle (the parallel push sites are
-// walled too, and `note_worker_spawned()` closes the single-threaded collector gate the
-// instant such a handle could exist — see A5.6 audit).
-#[cfg(not(feature = "index-gc"))]
-use crate::backend::eval::frame_chain::EvalFrameGuard;
 use crate::backend::grounded::GroundedState;
 use crate::backend::models::{GenericBindings, MemoHandle, MettaValue};
 // SpaceHandle was previously used by ProcessAddAtomAtom and ProcessRemoveAtomAtom,
@@ -249,15 +241,6 @@ pub struct ParallelDispatchHandle {
     /// the box is never read directly after construction.
     #[allow(dead_code)]
     pub(crate) root_frame: Box<super::eval_loop::ParallelBranchRootFrame>,
-    /// RAII handle that pops the frame_chain entry on drop. Stored as
-    /// `Option` so it can be `.take()`-ed for early release if needed.
-    /// **Drop order**: declared BEFORE `root_frame` so it drops first.
-    ///
-    /// A5.6: slab-only. The index build has no frame_chain module, and the
-    /// `push_custom` that produces this guard (eval_loop `parallel_dispatch`)
-    /// is cfg-walled in lock-step.
-    #[cfg(not(feature = "index-gc"))]
-    pub _root_guard: Option<EvalFrameGuard>,
     /// Snapshot of the global allocation counter at the start of the
     /// last cooperative GC drop. Used by the WaitForParallel pump to gate
     /// periodic guard drops.
@@ -446,9 +429,6 @@ pub struct ParallelCollapseDispatchHandle {
     /// `allow(dead_code)`: held alive for the lifetime of `_root_guard`.
     #[allow(dead_code)]
     pub(crate) root_frame: Box<super::eval_loop::ParallelCollapseRootFrame>,
-    /// A5.6: slab-only (see `ParallelDispatchHandle::_root_guard`).
-    #[cfg(not(feature = "index-gc"))]
-    pub _root_guard: Option<EvalFrameGuard>,
     pub started_at_alloc_count: AtomicU64,
     pub stall_state: Mutex<StallState>,
     /// See `ParallelDispatchHandle::_root_provider_arc`.

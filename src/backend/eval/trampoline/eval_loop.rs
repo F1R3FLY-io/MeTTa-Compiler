@@ -252,11 +252,6 @@ pub(crate) fn worker_cooperative_safepoint(extra_roots: &[MettaValue]) {
     // Collect parent-class roots: walk the frame chain that this thread
     // entered through (matches what the trampoline safepoint registers).
     let mut roots: Vec<MettaValue> = Vec::with_capacity(extra_roots.len() + 16);
-    // A5.6: slab-only. The index build has no frame_chain module; its parent-class
-    // roots are carried structurally by the K-spine. `roots` stays `mut` —
-    // `extend_from_slice` below writes it in both builds.
-    #[cfg(not(feature = "index-gc"))]
-    crate::backend::eval::frame_chain::collect_frame_chain_roots(&mut roots);
     roots.extend_from_slice(extra_roots);
 
     clear_aba_sensitive_caches();
@@ -2455,54 +2450,6 @@ pub(crate) struct ParallelCollapseRootFrame {
     pub(crate) results: ParallelEvalResults,
 }
 
-// A5.6: this whole collector chain is slab-only. Its only callers are the two
-// `EvalFrameGuard::push_custom` calls in `parallel_dispatch` /
-// `parallel_collapse_dispatch` (cfg-walled by EDITs D/F) plus each other
-// (apply-time grep: `collect_bound_value_roots` callers = {2228, 2247};
-// `collect_parallel_result_roots` callers = {2241, 2249} — both internal to
-// this group). With the push sites walled, all four are dead in the index
-// build, so the entire chain is walled in lock-step (else: dead_code warnings,
-// breaking the 49-warning baseline).
-#[cfg(not(feature = "index-gc"))]
-fn collect_bound_value_roots(out: &mut Vec<MettaValue>, value: &BoundValue) {
-    let (val, bindings) = value;
-    out.push(val.clone());
-    for (_, bound) in bindings.iter() {
-        out.push(bound.clone());
-    }
-}
-
-#[cfg(not(feature = "index-gc"))]
-fn collect_parallel_result_roots(results: &ParallelEvalResults, out: &mut Vec<MettaValue>) {
-    let guard = results.lock().expect("parallel results mutex poisoned");
-    for slot in guard.iter().flatten() {
-        for value in slot.iter() {
-            collect_bound_value_roots(out, value);
-        }
-    }
-}
-
-#[cfg(not(feature = "index-gc"))]
-unsafe fn collect_parallel_branch_frame_roots(data: *const (), out: &mut Vec<MettaValue>) {
-    let frame = unsafe { &*(data as *const ParallelBranchRootFrame) };
-    for (value, bindings) in frame.branches.iter() {
-        out.push(value.clone());
-        for (_, bound) in bindings.iter() {
-            out.push(bound.clone());
-        }
-    }
-    collect_parallel_result_roots(&frame.results, out);
-}
-
-#[cfg(not(feature = "index-gc"))]
-unsafe fn collect_parallel_collapse_frame_roots(data: *const (), out: &mut Vec<MettaValue>) {
-    let frame = unsafe { &*(data as *const ParallelCollapseRootFrame) };
-    for item in frame.items.iter() {
-        collect_bound_value_roots(out, item);
-    }
-    collect_parallel_result_roots(&frame.results, out);
-}
-
 /// **Completion-counter RAII (TLA+ `CollapseCompletion.tla`, 2026-06-03)**.
 ///
 /// A per-worker completion guard whose `Drop` performs the SOLE
@@ -2658,19 +2605,6 @@ fn parallel_dispatch(
     // gate the instant this handle could exist, so dropping the frame_chain
     // push drops no live index root. `root_frame` (Box) stays unconditional —
     // it is moved into the handle's `root_frame` field in both builds.
-    #[cfg(not(feature = "index-gc"))]
-    let root_frame_ptr = &*root_frame as *const ParallelBranchRootFrame as *const ();
-    // SAFETY: `root_frame` lives as long as the returned handle (stored
-    // inside it). The frame_chain entry is popped on `_root_guard` drop,
-    // which happens before `root_frame` (declaration order in the struct).
-    #[cfg(not(feature = "index-gc"))]
-    let root_guard = unsafe {
-        crate::backend::eval::frame_chain::EvalFrameGuard::push_custom(
-            crate::backend::eval::frame_chain::FrameLabel::Custom("parallel-branch"),
-            root_frame_ptr,
-            collect_parallel_branch_frame_roots,
-        )
-    };
 
     // Phase 10.A: capture parent's tracked-vars union ONCE before the spawn
     // loop. Each worker closure gets a cheap Arc::clone — the union is
@@ -2763,19 +2697,6 @@ fn parallel_dispatch(
             // by value ⇒ clearing the source thread-local afterwards is race-free).
             #[cfg(feature = "index-gc")]
             let _cache_teardown = WorkerCacheTeardownGuard;
-            // Phase 9.1: register `branch_expr` as a per-thread current-iter
-            // GC root for the worker's lifetime. Drops on closure exit
-            // (normal OR panic-unwind) and clears the cell. Closes the
-            // worker-input UAF window that the Phase 9.3 deletion of
-            // `safepoint_wait_for_quiescence` would otherwise re-open
-            // between Phase 8 dispatch-input snapshots and per-pump-tick
-            // safepoint root registrations.
-            // A5.3: slab-only — the `current_iter_root` module is walled out of the
-            // index build (which registers no providers). `branch_expr` stays used
-            // by the rest of this worker closure.
-            #[cfg(not(feature = "index-gc"))]
-            let _current_iter_scope =
-                super::current_iter_root::CurrentIterScope::enter(branch_expr);
             // Phase 10.A — Stage 1e closure: re-establish the parent's
             // collapse-bind tracked-vars on the worker thread so
             // `in_collapse_bind_scope()` and `active_tracked_vars()` return
@@ -3033,9 +2954,6 @@ fn parallel_dispatch(
         cancel_token,
         num_branches,
         root_frame,
-        // A5.6: slab-only — pairs with the `_root_guard` field wall in types.rs.
-        #[cfg(not(feature = "index-gc"))]
-        _root_guard: Some(root_guard),
         started_at_alloc_count,
         stall_state: Mutex::new(StallState::default()),
         _root_provider_arc: root_provider,
@@ -3243,11 +3161,6 @@ fn pump_parallel_wait(
                 .store(current_allocs, Ordering::Relaxed);
 
             let mut parent_roots: Vec<MettaValue> = Vec::with_capacity(64);
-            // A5.6: slab-only. `parent_roots` stays `mut` — the
-            // `stable_branches` + `handle.results` loops below write it in both
-            // builds; the index build's parent roots are structural (K-spine).
-            #[cfg(not(feature = "index-gc"))]
-            crate::backend::eval::frame_chain::collect_frame_chain_roots(&mut parent_roots);
             for (value, bindings) in stable_branches.iter() {
                 parent_roots.push(value.clone());
                 for (_, bound) in bindings.iter() {
@@ -3429,10 +3342,6 @@ fn pump_parallel_collapse_wait(
                 .store(current_allocs, Ordering::Relaxed);
 
             let mut parent_roots: Vec<MettaValue> = Vec::with_capacity(64);
-            // A5.6: slab-only. `parent_roots` stays `mut` — the `stable_items`
-            // + `handle.results` loops below write it in both builds.
-            #[cfg(not(feature = "index-gc"))]
-            crate::backend::eval::frame_chain::collect_frame_chain_roots(&mut parent_roots);
             for (value, bindings) in stable_items.iter() {
                 parent_roots.push(value.clone());
                 for (_, bound) in bindings.iter() {
@@ -3529,17 +3438,6 @@ fn parallel_collapse_dispatch(
     });
     // A5.6: slab-only (see analogous wall in `parallel_dispatch`). `root_frame`
     // (Box) stays unconditional — moved into the handle in both builds.
-    #[cfg(not(feature = "index-gc"))]
-    let root_frame_ptr = &*root_frame as *const ParallelCollapseRootFrame as *const ();
-    // SAFETY: see analogous block in `parallel_dispatch`.
-    #[cfg(not(feature = "index-gc"))]
-    let root_guard = unsafe {
-        crate::backend::eval::frame_chain::EvalFrameGuard::push_custom(
-            crate::backend::eval::frame_chain::FrameLabel::Custom("parallel-collapse"),
-            root_frame_ptr,
-            collect_parallel_collapse_frame_roots,
-        )
-    };
 
     // Phase 10.A — Stage 1e closure: capture the parent's collapse-bind
     // tracked-vars union ONCE before the spawn loop. Each worker clones
@@ -3649,13 +3547,6 @@ fn parallel_collapse_dispatch(
                     None
                 }
             };
-            // Phase 9.1: register `item_expr` as a per-thread current-iter
-            // GC root for the worker's lifetime (mirrors branch worker at
-            // `:1730`). See `current_iter_root` module docs.
-            // A5.3: slab-only — see the branch-worker site above. `item_expr` stays
-            // used by the rest of this collapse-worker closure.
-            #[cfg(not(feature = "index-gc"))]
-            let _current_iter_scope = super::current_iter_root::CurrentIterScope::enter(item_expr);
             // Phase 10.A — Stage 1e closure: re-establish the parent's
             // collapse-bind tracked-vars on the worker thread so
             // `in_collapse_bind_scope()` and `active_tracked_vars()` return
@@ -4152,31 +4043,6 @@ fn eval_trampoline_inner<C: EvalContext>(
     // `TrampolineFrameRoots` struct and guard are stack locals that drop at
     // function exit; the raw pointers they hold name in-scope `Vec`s.
     //
-    // A5.1: the frame_chain half is now SLAB-ONLY (`#[cfg(not(index-gc))]`, kept
-    // verbatim/byte-identical). The index build's sole spine root source is the
-    // typed K-spine `Spine` guard pushed unconditionally below.
-    #[cfg(not(feature = "index-gc"))]
-    let _tramp_roots = TrampolineFrameRoots {
-        work_stack: &work_stack as *const Vec<WorkItem>,
-        continuations: &continuations as *const Vec<Continuation>,
-    };
-    #[cfg(not(feature = "index-gc"))]
-    let _tramp_frame_guard: Option<crate::backend::eval::frame_chain::EvalFrameGuard> =
-        if crate::backend::models::metta_value::gc_mode_is_index() {
-            // SAFETY: `_tramp_roots` outlives the guard (both are locals of this
-            // activation, dropped in reverse declaration order — guard first),
-            // and its `work_stack` / `continuations` pointers name the in-scope
-            // `Vec`s above. `collect_trampoline_frame_roots` reads them read-only.
-            Some(unsafe {
-                crate::backend::eval::frame_chain::EvalFrameGuard::push_custom(
-                    crate::backend::eval::frame_chain::FrameLabel::Eval,
-                    &_tramp_roots as *const TrampolineFrameRoots as *const (),
-                    collect_trampoline_frame_roots,
-                )
-            })
-        } else {
-            None
-        };
 
     // A4.2b: typed `SUSPENDED_ACTIVATIONS::Spine` record alongside the
     // `frame_chain` guard above (index-gc only ⇒ byte-identical slab path). It
@@ -4434,11 +4300,6 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // NEW unchanged, OLD ⊆ NEW ∪ KEPT preserved. SAFE: the real index collector
                 // reads NEW (`midloop_roots`), not `root_set` (verified at the
                 // `should_collect_midloop()` flip below) — so this drops no live root.
-                #[cfg(not(feature = "index-gc"))]
-                {
-                    let concrete_roots = root_set.as_mut_vec();
-                    crate::backend::eval::frame_chain::collect_frame_chain_roots(concrete_roots);
-                }
                 // Collect GC roots from the eval memo cache. Cached MettaValue
                 // pointers must survive the mark-sweep cycle.
                 {
@@ -4909,9 +4770,6 @@ fn eval_trampoline_inner<C: EvalContext>(
             // raw-pointer contract sound unconditionally.)
             // A5.1: slab drops the frame_chain guard (byte-identical); the index
             // build drops its sole K-spine `Spine` guard (plan §2.1).
-            #[cfg(not(feature = "index-gc"))]
-            drop(_tramp_frame_guard);
-            #[cfg(feature = "index-gc")]
             drop(_tramp_kspine_guard);
             return crate::backend::eval::cesk::EvalOutcome::Yielded(
                 crate::backend::eval::cesk::SuspendedEval {

@@ -40,12 +40,8 @@
 use super::frame_label::FrameLabel;
 use crate::backend::models::MettaValue;
 
-#[cfg(feature = "index-gc")]
 pub(crate) use index_gc::push_expr_vec_frame;
-#[cfg(not(feature = "index-gc"))]
-pub(crate) use slab_gc::push_expr_vec_frame;
 
-#[cfg(feature = "index-gc")]
 mod index_gc {
     use super::*;
     use crate::backend::eval::cesk::k_spine::{SuspendedActivation, SuspendedActivationGuard};
@@ -68,40 +64,3 @@ mod index_gc {
     }
 }
 
-#[cfg(not(feature = "index-gc"))]
-mod slab_gc {
-    use super::*;
-    use crate::backend::eval::cesk::k_spine::{SuspendedActivation, SuspendedActivationGuard};
-    use crate::backend::eval::frame_chain::EvalFrameGuard;
-
-    /// Pin `data` (a caller-held `Vec<MettaValue>`) as a GC root for the slab
-    /// build. Byte-identical to the pre-A5.2 `frame_chain::maybe_push_frame`:
-    /// push the frame_chain frame AND (when `gc_mode_is_index()` — e.g. a slab
-    /// test running in index mode) the typed K-spine `ExprVec` sibling over the
-    /// SAME pointer. Keeping the runtime-gated K-spine half matches the
-    /// spine-guard slab arm (which keeps the runtime-gated `Spine`), so
-    /// `SuspendedActivation::ExprVec` is constructed in the slab build too (no
-    /// dead-variant warning). Both guards pop on drop (different thread-locals,
-    /// so drop order is immaterial).
-    ///
-    /// # Safety
-    /// `data` must point to a `Vec<MettaValue>` that outlives the returned guards
-    /// (the caller pins it in the same scope; LIFO drop order is required).
-    #[inline]
-    pub(crate) unsafe fn push_expr_vec_frame(
-        label: FrameLabel,
-        data: *const Vec<MettaValue>,
-    ) -> (EvalFrameGuard, Option<SuspendedActivationGuard>) {
-        // SAFETY: forwarded caller contract (`data` outlives the guards).
-        let frame = unsafe { EvalFrameGuard::push_vec(label, data) };
-        let kspine = if crate::backend::models::metta_value::gc_mode_is_index() {
-            // SAFETY: as above — `data` outlives the guard.
-            Some(unsafe {
-                SuspendedActivationGuard::push(SuspendedActivation::ExprVec { exprs: data })
-            })
-        } else {
-            None
-        };
-        (frame, kspine)
-    }
-}

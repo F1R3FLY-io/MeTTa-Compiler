@@ -124,32 +124,6 @@ where
     }
 }
 
-/// Type-erased frame-chain root collector for the bytecode VM (comprehensive
-/// mid-execution rooting, 2026-05-28).
-///
-/// Casts `data` back to the concrete runtime VM type
-/// `GenericBytecodeVM<MettaValue, ActiveFactory>` and appends its complete
-/// execution-stack roots via `collect_roots_into`. Registered via
-/// [`GenericBytecodeVM::with_vm_roots_frame`] around every nested
-/// `eval_trampoline` call, and walked by `collect_frame_chain_roots` at the
-/// mid-loop GC safepoint.
-///
-/// # Safety
-///
-/// `data` MUST point to a live `GenericBytecodeVM<MettaValue, ActiveFactory>`.
-/// `with_vm_roots_frame` only registers this collector when `V == MettaValue`
-/// (TypeId-checked) and passes `self as *const Self`; the runtime monomorphizes
-/// the VM with the build's `ActiveFactory`, so the cast type matches. The
-/// pointer is valid for the guard's lifetime because the guarded VM outlives the
-/// nested call. The collector only reads `&self`.
-// A5.1: SLAB-ONLY — referenced only by the slab arm of `with_vm_roots_frame`.
-// The index build decodes the VM structurally via `VmLeaf::Vm` -> `collect_k_spine`.
-#[cfg(not(feature = "index-gc"))]
-unsafe fn vm_roots_collector(data: *const (), out: &mut Vec<MettaValue>) {
-    type RuntimeVm = GenericBytecodeVM<MettaValue, crate::backend::models::ActiveFactory>;
-    let vm = unsafe { &*(data as *const RuntimeVm) };
-    vm.collect_roots_into(out);
-}
 
 /// Generic bytecode virtual machine that works with any value type.
 ///
@@ -1277,64 +1251,11 @@ where
     /// the `&mut self` call frame — the collector runs synchronously on THIS
     /// thread inside the nested trampoline, while no `&mut self` method of this
     /// VM is concurrently executing).
-    #[inline]
-    // A5.1: GC-build split. SLAB keeps the frame_chain `BytecodeVm` frame
-    // (byte-identical: unconditional frame + runtime-gated K-spine sibling); the
-    // INDEX variant below uses ONLY the typed K-spine `VmLeaf::Vm` leaf.
-    #[cfg(not(feature = "index-gc"))]
-    fn with_vm_roots_frame(
-        &self,
-    ) -> Option<(
-        crate::backend::eval::frame_chain::EvalFrameGuard,
-        Option<crate::backend::eval::cesk::k_spine::VmLeafGuard>,
-    )> {
-        use std::any::TypeId;
-        if TypeId::of::<V>() != TypeId::of::<MettaValue>() {
-            return None;
-        }
-        // SAFETY: `vm_roots_collector` casts the `*const ()` back to
-        // `*const GenericBytecodeVM<MettaValue, ActiveFactory>` — the ONLY
-        // concrete runtime monomorphization that reaches a nested
-        // `eval_trampoline` (the JIT tier, the other re-entry source, is
-        // AIRTIGHT-gated OFF under index-gc; in slab mode this rooting is
-        // additive and harmless). We verified `V == MettaValue` above; the
-        // factory `F` is the build's `ActiveFactory` at every live call site.
-        // The pointer outlives the guard because `self` outlives the nested
-        // call (guard is a sibling stack local).
-        let data = self as *const Self as *const ();
-        let frame = unsafe {
-            crate::backend::eval::frame_chain::EvalFrameGuard::push_custom(
-                crate::backend::eval::frame_chain::FrameLabel::BytecodeVm,
-                data,
-                vm_roots_collector,
-            )
-        };
-        // A4.2b: also record the typed `LIVE_VM_STACK::Vm` leaf alongside the
-        // frame_chain frame (index-gc only ⇒ byte-identical slab path). The VM
-        // is decoded structurally by `collect_k_spine` via the SAME
-        // `collect_roots_into` that `vm_roots_collector` uses. SAFETY: as above —
-        // `V == MettaValue` verified, `F == ActiveFactory` at every live call
-        // site, `self` outlives the guard.
-        let kspine = if crate::backend::models::metta_value::gc_mode_is_index() {
-            let vm_ptr = self as *const Self
-                as *const GenericBytecodeVM<MettaValue, crate::backend::models::ActiveFactory>;
-            Some(unsafe {
-                crate::backend::eval::cesk::k_spine::VmLeafGuard::push(
-                    crate::backend::eval::cesk::k_spine::VmLeaf::Vm { vm: vm_ptr },
-                )
-            })
-        } else {
-            None
-        };
-        Some((frame, kspine))
-    }
-
-    /// INDEX build: push ONLY the typed `LIVE_VM_STACK::Vm` leaf — the sole
-    /// structural root source for this VM across a nested `eval_trampoline`
-    /// (read by `collect_k_spine` via the SAME `collect_roots_into` the slab
-    /// `vm_roots_collector` uses). Returns `None` for non-`MettaValue`
+    /// Push the typed `LIVE_VM_STACK::Vm` leaf — the sole structural root source
+    /// for this VM across a nested `eval_trampoline` (read by `collect_k_spine`
+    /// via `collect_roots_into`). Returns `None` for non-`MettaValue`
     /// monomorphizations (no rooting needed).
-    #[cfg(feature = "index-gc")]
+    #[inline]
     fn with_vm_roots_frame(&self) -> Option<crate::backend::eval::cesk::k_spine::VmLeafGuard> {
         use std::any::TypeId;
         if TypeId::of::<V>() != TypeId::of::<MettaValue>() {
@@ -4206,36 +4127,9 @@ where
                     unsafe { std::mem::transmute::<Vec<V>, Vec<MettaValue>>(materialized) };
                 let materialized_box = Box::new(materialized_mv);
                 let ptr = &*materialized_box as *const Vec<MettaValue>;
-                // A5.1 GC-build split. SLAB: frame_chain frame + runtime-gated
-                // K-spine sibling (byte-identical). INDEX: the typed
-                // `VmLeaf::SavedBindings` K-spine leaf alone (no frame_chain). Both
-                // pin the SAME frozen `materialized_box` Vec (built once, never
-                // mutated ⇒ staleness-safe), returned in the tuple so it outlives
-                // the guard(s) (tuple field 0 drops first).
-                #[cfg(not(feature = "index-gc"))]
-                let out = {
-                    let guard = unsafe {
-                        crate::backend::eval::frame_chain::EvalFrameGuard::push_vec(
-                            crate::backend::eval::frame_chain::FrameLabel::Custom(
-                                "vm-template-saved-bindings",
-                            ),
-                            ptr,
-                        )
-                    };
-                    let kspine = if crate::backend::models::metta_value::gc_mode_is_index() {
-                        Some(unsafe {
-                            crate::backend::eval::cesk::k_spine::VmLeafGuard::push(
-                                crate::backend::eval::cesk::k_spine::VmLeaf::SavedBindings {
-                                    bindings: ptr,
-                                },
-                            )
-                        })
-                    } else {
-                        None
-                    };
-                    Some((guard, kspine, materialized_box))
-                };
-                #[cfg(feature = "index-gc")]
+                // Pin the frozen `materialized_box` Vec via the typed
+                // `VmLeaf::SavedBindings` K-spine leaf (built once, never mutated ⇒
+                // staleness-safe), returned in the tuple so it outlives the guard.
                 let out = {
                     let guard = unsafe {
                         crate::backend::eval::cesk::k_spine::VmLeafGuard::push(
@@ -4373,33 +4267,8 @@ where
                     unsafe { std::mem::transmute::<Vec<V>, Vec<MettaValue>>(materialized) };
                 let materialized_box = Box::new(materialized_mv);
                 let ptr = &*materialized_box as *const Vec<MettaValue>;
-                // A5.1 GC-build split (see the map-atom template above). SLAB:
-                // frame_chain frame + runtime-gated K-spine sibling (byte-identical).
-                // INDEX: the typed `VmLeaf::SavedBindings` K-spine leaf alone.
-                #[cfg(not(feature = "index-gc"))]
-                let out = {
-                    let guard = unsafe {
-                        crate::backend::eval::frame_chain::EvalFrameGuard::push_vec(
-                            crate::backend::eval::frame_chain::FrameLabel::Custom(
-                                "vm-foldl-template-saved-bindings",
-                            ),
-                            ptr,
-                        )
-                    };
-                    let kspine = if crate::backend::models::metta_value::gc_mode_is_index() {
-                        Some(unsafe {
-                            crate::backend::eval::cesk::k_spine::VmLeafGuard::push(
-                                crate::backend::eval::cesk::k_spine::VmLeaf::SavedBindings {
-                                    bindings: ptr,
-                                },
-                            )
-                        })
-                    } else {
-                        None
-                    };
-                    Some((guard, kspine, materialized_box))
-                };
-                #[cfg(feature = "index-gc")]
+                // Pin the frozen `materialized_box` Vec via the typed
+                // `VmLeaf::SavedBindings` K-spine leaf (foldl template).
                 let out = {
                     let guard = unsafe {
                         crate::backend::eval::cesk::k_spine::VmLeafGuard::push(

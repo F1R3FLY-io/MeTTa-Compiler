@@ -1977,8 +1977,8 @@ impl Store<MettaValue> for IndexHeapStore {
 // hold — see `gate_open`. The root-completeness invariant (the UAF linchpin) is
 // satisfied by the CALLER, which passes the structural CESK/E0 roots relevant
 // to the entry point plus the narrow driver transport roots that are live at
-// that entry point. The legacy `collect_all_roots()`/`RootProvider` registry is
-// slab-only and is not an index-collector root source.
+// that entry point. The legacy `collect_all_roots()`/`RootProvider` registry
+// (deleted in F4) was never an index-collector root source.
 // ============================================================================
 pub mod index_gc {
     use super::global_index_heap;

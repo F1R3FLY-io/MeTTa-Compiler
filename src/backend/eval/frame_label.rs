@@ -1,21 +1,17 @@
 //! `FrameLabel` — the human-readable evaluation-frame label used for GC-root
-//! frame pushes and (slab) stack-trace rendering.
+//! frame pushes and stack-trace rendering.
 //!
-//! ## Why this lives in its own both-builds module (A5.0)
+//! ## Why this lives in its own module (A5.0)
 //!
-//! `FrameLabel` was originally defined in [`frame_chain`](super::frame_chain),
-//! the thread-local GC-root chain. Phase A5 cfg-walls `frame_chain` to the slab
-//! build (A5.6: `#[cfg(not(feature = "index-gc"))] mod frame_chain;`), because
-//! the index-gc collector reads roots structurally from the typed K-spine
+//! `FrameLabel` was originally defined in `frame_chain`, the thread-local
+//! GC-root chain. Phase A5 routed the index collector to read roots
+//! structurally from the typed K-spine
 //! ([`cesk::k_spine`](super::cesk::k_spine)) rather than from a discovered
-//! frame chain. But `FrameLabel` is still passed by the module-import /
-//! assertion [`push_expr_vec_frame`](super::expr_vec_frame::push_expr_vec_frame)
-//! call sites in BOTH builds (the index arm ignores it; the slab arm uses it for
-//! the frame_chain label). Relocating it to this both-builds module keeps the
-//! helper's signature stable across A5.6 with no rework.
-//!
-//! `frame_chain` re-exports this type (`pub use ...frame_label::FrameLabel`) so
-//! existing `frame_chain::FrameLabel` paths keep compiling in the slab build.
+//! frame chain, and F4 deleted the `frame_chain` module outright. `FrameLabel`
+//! had already been relocated here — a standalone module — so it survived that
+//! deletion with a stable signature for the
+//! [`push_expr_vec_frame`](super::expr_vec_frame::push_expr_vec_frame) call
+//! sites, which still pass a label the structural reader ignores.
 
 use std::fmt;
 

@@ -25,12 +25,10 @@ use crate::backend::models::{
     alloc_count_snapshot, register_temporary_roots, request_gc, ActiveFactory, ActiveStore,
     MettaState, MettaValue,
 };
-// `GcFactory` is only referenced by the slab-only `eval_factory()`/`storage_factory()`
-// shims, which are compiled out under `--features index-gc`.
 use super::context::{EvalContext, MettaEnvironment};
-// Inc 0 (Store seam): hold a `Store` rather than a bare `GcFactory`.
-// `ActiveStore` (= `SlabStore` today) is the GC-migration alias; `Store` is
-// imported for its `factory()` accessor used by the `EvalContext` impl below.
+// Inc 0 (Store seam): hold a `Store` rather than a bare factory.
+// `ActiveStore` (= `IndexHeapStore`) is the store alias; `Store` is imported
+// for its `factory()` accessor used by the `EvalContext` impl below.
 use crate::backend::eval::cesk::store::Store;
 
 /// Safepoint allocation count threshold.
@@ -285,8 +283,8 @@ mod tests {
     use super::*;
     use crate::backend::models::MettaValueFactory;
 
-    // Exercises the slab-only `eval_factory()`/`storage_factory()` backward-compat
-    // shims, which are compiled out under `--features index-gc`.
+    // Exercises the `EvalContext::factory()` accessor (the value factory behind
+    // a `SessionContext`).
     #[test]
     fn test_session_context_factory_trait() {
         let state = MettaState::new();
@@ -298,8 +296,7 @@ mod tests {
         assert_eq!(value.as_atom(), Some("test"));
     }
 
-    // Exercises the slab-only `eval_factory()`/`storage_factory()` backward-compat
-    // shims, which are compiled out under `--features index-gc`.
+    // Exercises `SessionContext` construction and its `Debug` formatting.
     #[test]
     fn test_session_context_debug() {
         let state = MettaState::new();

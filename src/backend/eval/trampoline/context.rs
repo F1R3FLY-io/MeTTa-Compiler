@@ -535,11 +535,10 @@ mod tests {
         assert_eq!(MettaValueTrait::as_atom(&value), Some("test"));
     }
 
-    // (cfg-gate) Asserts the slab representation: `StaticEvalContext` is
-    // pointer-sized because the slab `GcFactory` holds one `&'static`
-    // allocator ref. Under `--features index-gc` the factory is the ZST
-    // `IndexFactory`, so the context is zero-sized — this size invariant is
-    // slab-specific and runs only in the slab build.
+    // Smoke test: `StaticEvalContext::new_env()` constructs cleanly under the
+    // ZST `IndexFactory` (the context is zero-sized — the factory holds no
+    // `&'static` allocator ref). The original slab `GcFactory` made this
+    // pointer-sized; that representation was removed with the slab store.
     #[test]
     fn test_static_arena_context_env() {
         let _env = StaticEvalContext::new_env();

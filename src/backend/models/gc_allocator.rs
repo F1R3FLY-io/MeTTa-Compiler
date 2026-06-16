@@ -3663,9 +3663,9 @@ static RENDEZVOUS_FORCED_FOR_TEST: AtomicBool = AtomicBool::new(false);
 
 /// Whether index collection is driven by the dedicated CESK GC thread.
 ///
-/// This is no longer an environment-gated debug mode: in the index build the
-/// E1 dedicated-driver protocol is the normal collector regime. The slab build
-/// remains false via `gc_mode_is_index()`, so slab-only paths stay untouched.
+/// This is no longer an environment-gated debug mode: the E1 dedicated-driver
+/// protocol is the normal collector regime, so this is just `gc_mode_is_index()`
+/// (always true since the slab store was removed).
 pub(crate) fn dedicated_gc_enabled() -> bool {
     crate::backend::models::metta_value::gc_mode_is_index()
 }
@@ -3935,8 +3935,8 @@ pub(crate) fn worker_resume_wait_for_cycle(my_gen: u64) {
 // race away; `ptrace_scope=1` blocks sibling-attach). A nonzero count at a hang with the
 // GC idle names the permanently-blocked site: GATE = `worker_wait_for_resume`
 // (WorkerEnter admission), PARK = `worker_resume_wait_for_cycle` (rendezvous gen-wait),
-// STRADDLE = `reacquire_eval_guard_after_safepoint_full`. Always compiled (cheap atomics);
-// the instrumented fns are dead in the slab build, so slab runtime stays byte-identical.
+// STRADDLE = `reacquire_eval_guard_after_safepoint_full`. Always compiled (cheap
+// atomics); written only on the index collector's wait paths.
 pub(crate) static GC_GATE_WAITERS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static GC_PARK_WAITERS: AtomicUsize = AtomicUsize::new(0);
 // STRADDLE's only writer is the `#[cfg(feature = "index-gc")]` straddle loop in
@@ -4152,11 +4152,10 @@ pub(crate) fn resume_workers() {
 // D1.1 unit test — rendezvous primitives in isolation (BOTH builds)
 // ----------------------------------------------------------------------------
 //
-// Deliberately gated `#[cfg(test)]` (NOT `cfg(all(test, not(feature =
-// "index-gc")))` like the slab-only `mod tests` below) because the rendezvous
-// primitives are build-agnostic (pure synchronization over `MettaValue`, which
-// exists in both builds) and the Phase-D gate requires this test to PASS — and
-// add +1 to the test count — under `--features index-gc` as well as slab.
+// Plain `#[cfg(test)]`: the rendezvous primitives are pure synchronization over
+// `MettaValue`, and the Phase-D gate requires this test to run and add +1 to the
+// test count. (During the slab/index migration it was deliberately NOT gated to
+// the slab-only `mod tests` below, so it ran in both builds.)
 #[cfg(test)]
 mod rendezvous_d1_1_tests {
     use super::*;

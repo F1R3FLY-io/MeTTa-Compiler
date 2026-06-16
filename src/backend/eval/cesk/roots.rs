@@ -286,7 +286,7 @@ impl RootSet<crate::backend::models::MettaValue> {
 /// `ROOT_REGISTRY` / `Weak<dyn RootProvider>` dynamic dispatch.
 ///
 /// Each call delegates to the holder's own inherent collector — the same bodies
-/// the slab-only `RootProvider` shims delegate to — so the index build gets a
+/// the deleted `RootProvider` shims delegated to — so the index build gets a
 /// named structural reader instead of dynamic discovery. The source-coupling
 /// checks keep this call sequence pinned.
 ///
@@ -341,8 +341,8 @@ pub fn collect_global_anchors(out: &mut Vec<crate::backend::models::MettaValue>)
 ///
 /// Every index-GC safepoint and worker publication path reaches this reader
 /// directly or through `collect_machine_roots_live` /
-/// `collect_complete_thread_contribution`; slab-only registry/frame-chain paths
-/// are not index-root discovery channels.
+/// `collect_complete_thread_contribution`; the deleted registry/frame-chain
+/// paths were never index-root discovery channels.
 pub fn collect_machine_roots(
     out: &mut Vec<crate::backend::models::MettaValue>,
     operand_stack: &OperandStack<crate::backend::models::MettaValue>,
@@ -547,14 +547,12 @@ pub fn collect_persistent_roots(
 /// PERSISTENT reader (`collect_persistent_roots` ∪ `result`) UNION the legitimately-kept
 /// driver-C program (`MettaState.{source,output}`). The safety direction (no protected
 /// root dropped) for the A4.4 flip of the two quiescence collectors. Debug-only; the
-/// callers gate it on `gc_mode_is_index()` (in slab mode `collect_all_roots`' frame-chain
-/// roots have no structural mirror — the structural reader is the index-gc root source).
-/// PERMANENT CI invariant (RT-7, A5 COMPLETE). A5 cfg-scoped the discovery apparatus
-/// to the slab build, so this is now the STANDING check: in the index build it asserts
-/// structural-reader internal consistency (NEW ∪ KEPT ⊇ the live S∪C∪K + caches +
-/// deferred root_set; the registry term is gone); in the slab build it asserts the
-/// structural reader covers the (still-present) discovery apparatus. Kept until F4
-/// physically deletes the slab apparatus — never delete it while slab exists.
+/// callers gate it on `gc_mode_is_index()`. PERMANENT CI invariant (RT-7, A5
+/// COMPLETE). A5 cfg-scoped the discovery apparatus to the slab build and F4
+/// physically deleted it, so this is now the STANDING index-only check: it
+/// asserts structural-reader internal consistency (NEW ∪ KEPT ⊇ the live S∪C∪K
+/// + caches + deferred root_set; the registry term is gone). Kept as the index
+/// machine-equivalence oracle — do not delete it.
 #[cfg(debug_assertions)]
 pub fn assert_quiescence_superset(
     result: &[crate::backend::models::MettaValue],
@@ -563,13 +561,12 @@ pub fn assert_quiescence_superset(
     >,
     state: &crate::backend::models::MettaState,
 ) {
-    // OLD = the discovered set the BEFORE feed consumed: collect_all_roots()
-    // (ROOT_REGISTRY ∪ SAFEPOINT_ROOTS) ∪ the about-to-return result values.
-    // A5.5: collect_all_roots is slab-only (registry walled to slab). In index the
-    // registry is empty by construction (0 providers; its only contribution was
-    // collect_safepoint_roots ⊆ KEPT below), so OLD ← Vec::new() here only SHRINKS
-    // the discovered set — `OLD ⊆ (NEW ∪ KEPT)` is preserved by monotonicity (the
-    // dropped term was already covered by KEPT). old_vals stays defined in both builds.
+    // OLD = the discovered set the BEFORE feed consumed. The `collect_all_roots()`
+    // (ROOT_REGISTRY ∪ SAFEPOINT_ROOTS) term was deleted in F4; its only runtime
+    // contribution had been collect_safepoint_roots ⊆ KEPT below, so OLD ←
+    // Vec::new() (just the about-to-return result values) here only SHRINKS the
+    // discovered set — `OLD ⊆ (NEW ∪ KEPT)` is preserved by monotonicity (the
+    // dropped term was already covered by KEPT).
     let mut old_vals: Vec<crate::backend::models::MettaValue> = Vec::new();
     old_vals.extend(result.iter().copied());
     let mut old: Vec<usize> = old_vals.iter().map(|v| v.inner_ptr() as usize).collect();

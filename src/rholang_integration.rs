@@ -600,9 +600,9 @@ pub async fn resume_shipped(buf: &[u8], into: &MettaState) -> Result<(), String>
 /// persistent RAII-scoped channel provides. `SafepointRootHandle` is `Send` (it is
 /// `{ idx: usize }`), so it crosses the `spawn_eval` + async-gather boundary safely.
 ///
-/// BYTE-IDENTICAL WHEN DORMANT: in the slab build the handle field does not exist (the
-/// F1 mechanism is `#[cfg(feature = "index-gc")]`); in the index build the field is
-/// `None` unless `dedicated_gc_enabled()` is ON.
+/// BYTE-IDENTICAL WHEN DORMANT: the handle field is `None` unless
+/// `dedicated_gc_enabled()` is ON, so the dispatch path is unchanged when the
+/// dedicated collector is off.
 #[cfg(feature = "async")]
 struct BatchOutcome {
     idx: usize,

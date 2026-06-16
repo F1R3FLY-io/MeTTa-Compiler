@@ -221,7 +221,7 @@ fn render_gc_state() -> String {
     let disabled = gc_allocator::is_gc_disabled();
     let reachable = gc_allocator::gc_reachable_counter();
     let bp_level = gc_allocator::backpressure_level();
-    // The canonical write-once runtime mode flag (false in a slab-only build).
+    // The canonical runtime mode flag (always true since the slab store was removed).
     let index_mode = crate::backend::models::metta_value::gc_mode_is_index();
 
     let _ = writeln!(

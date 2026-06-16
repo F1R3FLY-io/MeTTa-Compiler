@@ -4100,7 +4100,7 @@ fn eval_trampoline_inner<C: EvalContext>(
             // addrs_in(K), with the tree-walker S empty here and E_local carried
             // inside C/K frame bindings. In index-gc the collector vector is
             // built later by collect_machine_roots*(), which adds reach(E0),
-            // global anchors, and typed K-spine leaves. RootProvider is slab-only.
+            // global anchors, and typed K-spine leaves. RootProvider discovery was slab-only (deleted in F4).
             // SECK Phase A1: route through the canonical structural reader
             // (`RootSet::collect_all` = S∪C∪K; clears the buffer internally) — the
             // identical reader `SeckState::collect_gc_roots` uses. S is the empty
@@ -4148,8 +4148,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // so it doesn't sweep values only reachable through them.
                     // A5.3: call the inherent structural reader `collect_roots_into`
                     // (kept unconditional) directly — byte-identical to the
-                    // `RootProvider::collect_roots` it delegated to, and the
-                    // `RootProvider` impl for E₀ is now slab-only (cfg-walled).
+                    // `RootProvider::collect_roots` it delegated to (the
+                    // `RootProvider` impl for E₀ was slab-only and was deleted in F4).
                     for deferred_env in &deferred_shared_drops {
                         deferred_env.as_ref().collect_roots_into(concrete_roots);
                     }

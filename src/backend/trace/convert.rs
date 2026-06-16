@@ -187,6 +187,16 @@ pub fn trace_value(root: &MettaValue) -> TraceValue {
                                 work.push(v.inner() as *const MettaValueInner);
                                 continue;
                             }
+                            MettaValueInner::Lazy(v) => {
+                                // Lazy is PT-canonical and invisible to
+                                // display/hash/MORK; peel it and trace the inner
+                                // value (mirrors Spanned). Fixes the `trace`
+                                // feature's non-exhaustive match — `Lazy` was
+                                // added to `MettaValueInner` after this converter
+                                // and the feature is normally off, so it bit-rotted.
+                                work.push(v.inner() as *const MettaValueInner);
+                                continue;
+                            }
                         }
                     } else if conts.is_empty() {
                         // No work, no conts, no result → shouldn't happen with correct input.

@@ -41,8 +41,7 @@ pub mod branch_analysis;
 pub mod continuation_compression;
 pub mod continuation_spine;
 /// E4: serializable continuation slices (capture/restore/checkpoint over the
-/// σ-reified suspended CESK state). Index-store only — slab build stays
-/// byte-identical.
+/// σ-reified suspended CESK state). Index-store only.
 pub mod continuation_slice;
 pub mod coroutine;
 pub mod discrimination_tree;

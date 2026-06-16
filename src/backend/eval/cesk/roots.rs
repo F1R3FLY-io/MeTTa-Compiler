@@ -33,9 +33,9 @@
 //!
 //! `collect_all` itself still computes only the control registers (S ∪ C ∪ K);
 //! E₀ is added by `collect_structural` / `collect_persistent_roots` plus
-//! `collect_global_anchors`. In the `index-gc` build the registry/frame-chain
-//! discovery apparatus is cfg-walled out; the remaining narrow safepoint channel
-//! is driver transport, not root discovery.
+//! `collect_global_anchors`. The registry/frame-chain discovery apparatus was
+//! deleted in F4; the remaining narrow safepoint channel is driver transport,
+//! not root discovery.
 
 use crate::backend::models::MettaValueTrait;
 

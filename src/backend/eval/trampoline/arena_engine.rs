@@ -353,7 +353,7 @@ mod tests {
     /// (eval_loop.rs) asserts `collect_machine_roots` ⊇ the discovered root set on
     /// EVERY safepoint hit; reaching the end without panicking == the structural
     /// reader stayed a superset across the whole run. This keeps the reader honest
-    /// in CI after A5 deletes the discovery apparatus.
+    /// in CI now that A5 and F4 deleted the discovery apparatus.
     ///
     /// `gc_mode_is_index()` is true by construction under `feature = "index-gc"`.
     #[test]

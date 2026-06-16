@@ -3505,8 +3505,8 @@ pub trait EnvRoots: Send + Sync {
 /// E1-FLIP Path B V4 (B2′): the registry of live env structs. `None` marks a free
 /// slot (kept, not removed — the `LIVE_DISPATCHES`/`SAFEPOINT_ROOTS` discipline).
 /// Each entry is a `Weak` so an env dropped without deregistering self-prunes on the
-/// next walk. Fully-qualified `std::sync::Weak` because the `use std::sync::Weak` is
-/// `#[cfg(not(index-gc))]`-gated (keeps the 49-warning baseline in both builds).
+/// next walk. `std::sync::Weak` is fully-qualified because the top-level
+/// `use std::sync::Weak` import was slab-`ROOT_REGISTRY`-only and was removed with it.
 static LIVE_ENVS: OnceLock<Mutex<Vec<Option<std::sync::Weak<dyn EnvRoots>>>>> = OnceLock::new();
 
 fn live_envs() -> &'static Mutex<Vec<Option<std::sync::Weak<dyn EnvRoots>>>> {
@@ -5435,10 +5435,8 @@ pub trait DispatchRoots: Send + Sync {
 /// marks a free slot (kept, not removed, so other handles' indices stay valid —
 /// the `SAFEPOINT_ROOTS` discipline). Each entry is a `Weak` so a dispatch handle
 /// that drops without deregistering (panic) self-prunes on the next walk.
-// NOTE: `std::sync::Weak` is fully-qualified here because the `use std::sync::Weak`
-// import above is `#[cfg(not(index-gc))]`-gated (it was slab-ROOT_REGISTRY-only); the
-// fully-qualified path keeps that import — and the 49-warning baseline — untouched in
-// both builds.
+// NOTE: `std::sync::Weak` is fully-qualified here because the top-level
+// `use std::sync::Weak` import was slab-`ROOT_REGISTRY`-only and was removed with it.
 static LIVE_DISPATCHES: OnceLock<Mutex<Vec<Option<std::sync::Weak<dyn DispatchRoots>>>>> =
     OnceLock::new();
 
@@ -7963,7 +7961,7 @@ pub(crate) fn deserialize_slab_value<F: MettaValueFactory<MettaValue>>(
 // ============================================================================
 //
 // Compiled ONLY under `--cfg loom` (a dedicated capped lane — never in the
-// normal build/test graph, so it never perturbs the lib-49-warnings gate). It
+// normal build/test graph, so it never perturbs the lib-warnings gate). It
 // model-checks the §D1 protocol (1 requestor + 2 workers) over loom's
 // instrumented atomics/mutex/condvar, exploring ALL interleavings within
 // `LOOM_MAX_PREEMPTIONS` to prove four properties:

@@ -25,11 +25,11 @@
 //!
 //! ## Additive / byte-identical (A4.2b)
 //!
-//! The call sites push these records ALONGSIDE the existing `frame_chain`
-//! guards, **gated on `gc_mode_is_index()`** (so the slab build does ZERO extra
-//! work). The thread-locals are *write-only* in the hot path; they are read only
-//! by [`collect_k_spine`] (tests + the A4.3 machine-equivalence oracle + the
-//! A4.4 safepoint). `frame_chain` stays until Phase A5 deletes it.
+//! The call sites push these records at the K-spine sites, gated on
+//! `gc_mode_is_index()` (historically ALONGSIDE the `frame_chain` guards that
+//! A5/F4 later deleted). The thread-locals are *write-only* in the hot path;
+//! they are read only by [`collect_k_spine`] (tests + the A4.3 machine-
+//! equivalence oracle + the A4.4 safepoint).
 
 use std::cell::RefCell;
 
@@ -53,7 +53,7 @@ pub(crate) enum SuspendedActivation {
     },
     /// Module-import / assertion sites: a caller-held `Vec<MettaValue>` of
     /// compiled expressions live across the nested eval but not (yet) in any
-    /// C/K. Mirrors `frame_chain::collect_vec_roots`. A5 re-homes these into C.
+    /// C/K — the index analogue of the deleted `frame_chain::collect_vec_roots`.
     ExprVec { exprs: *const Vec<MettaValue> },
 }
 

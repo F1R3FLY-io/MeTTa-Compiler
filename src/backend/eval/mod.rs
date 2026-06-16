@@ -402,8 +402,8 @@ pub fn eval(
         //   ∪ result.0                          — the about-to-return values (a Rust local)
         //   ∪ state.collect_driver_program_roots — the driver's program control (C).
         // C∪K are empty post-EvalGuard ⇒ NO current WorkItem ⇒ collect_persistent_roots
-        // (not collect_machine_roots). collect_all_roots() survives in the oracle's OLD
-        // until A5. Use `result.1.shared` (the consumed `env` was moved into eval_inner).
+        // (not collect_machine_roots). collect_all_roots() fed the oracle's OLD until
+        // A5/F4 deleted it. Use `result.1.shared` (the consumed `env` was moved into eval_inner).
         let mut roots: Vec<MettaValue> = Vec::with_capacity(result.0.len() + 64);
         crate::backend::eval::cesk::roots::collect_persistent_roots(
             &mut roots,

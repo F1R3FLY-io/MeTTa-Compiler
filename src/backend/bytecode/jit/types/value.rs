@@ -122,8 +122,8 @@ impl JitValue {
 
     /// Create a TAG_PTR value from an active-store inner payload.
     ///
-    /// In legacy slab builds the payload is a valid `MettaValueInner` pointer.
-    /// In index-gc builds the payload is the arena `Addr` bits returned by
+    /// In the legacy slab build the payload was a valid `MettaValueInner` pointer.
+    /// In this (index) build the payload is the arena `Addr` bits returned by
     /// `inner_ptr`.
     #[inline(always)]
     pub fn from_inner_ptr(ptr: *const MettaValueInner) -> Self {

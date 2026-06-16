@@ -90,8 +90,8 @@ impl SlotRef {
     /// Encode a live `MettaValue` into a [`SlotRef`]. Heap handles record their
     /// raw Addr + flags; inline scalars are carried by value.
     ///
-    /// Requires the process to be in index mode (the E4 module is cfg-walled to
-    /// `index-gc`, where that holds).
+    /// Requires the process to be in index mode (always true since the slab
+    /// store was removed).
     pub fn from_value(v: MettaValue) -> Self {
         if let Some(addr) = v.as_arena_addr() {
             SlotRef::Heap {

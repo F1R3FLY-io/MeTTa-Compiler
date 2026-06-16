@@ -323,8 +323,7 @@ pub(crate) fn clear_all_worker_thread_local_caches() {
 
 /// Worker park-RESUME cache clear. On the dedicated index-GC path a sweep may have run while
 /// this worker was parked, so it must drop the FULL σ-cache set (the GC thread could
-/// not reach this thread's caches). The slab build stays on the prior
-/// `clear_aba_sensitive_caches()` call-site behavior.
+/// not reach this thread's caches).
 #[inline]
 fn clear_worker_caches_on_resume() {
     {
@@ -2866,9 +2865,9 @@ fn parallel_dispatch(
     // ITSELF is the parallelism witness (it exists only because FANOUT triggered ≥2
     // branches — `num_branches >= 2` here), so `dedicated_gc_enabled()` is the
     // correct, non-racy registration gate; FANOUT=0 reaches no dispatch site, so the
-    // anchor stays empty there regardless. Reuses the SAME `root_provider` Arc
-    // (constructed in both builds) — no new allocation; `DispatchRoots` and
-    // `RootProvider` are distinct traits on it.
+    // anchor stays empty there regardless. Reuses the SAME `root_provider` Arc —
+    // no new allocation. (It historically impl'd both `DispatchRoots` and the
+    // deleted `RootProvider`; only `DispatchRoots` remains.)
     let live_dispatch = if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
         Some(
             crate::backend::models::gc_allocator::register_live_dispatch(
@@ -4116,8 +4115,8 @@ fn eval_trampoline_inner<C: EvalContext>(
             // and actual index cycles build `midloop_roots` below from the structural
             // CESK reader, which includes `collect_global_anchors` (eval/match,
             // subgoal, thunk, binding-capture, K-spine). Keep this block for the
-            // slab build and for the debug index machine-equivalence oracle, but do
-            // not walk the subgoal/thunk caches every 4096 ticks in release index.
+            // debug index machine-equivalence oracle, but do not walk the
+            // subgoal/thunk caches every 4096 ticks in release.
             #[cfg(debug_assertions)]
             {
                 root_set.collect_all(&machine_operand_stack, &work, &work_stack, &continuations);
@@ -4126,10 +4125,10 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // This protects values held by callers of nested trampolines
                 // (e.g., compiled expressions in eval_include_generic).
                 //
-                // A5.1: SLAB-ONLY. In the index build the spine/VM/ExprVec roots are
-                // carried structurally by the K-spine (read by NEW = collect_machine_roots
-                // at the collection site below), so this frame_chain contribution to the
-                // oracle's OLD `root_set` is cfg-walled out in lock-step — OLD shrinks,
+                // A5.1 (was SLAB-ONLY): the spine/VM/ExprVec roots are carried
+                // structurally by the K-spine (read by NEW = collect_machine_roots
+                // at the collection site below), so the old frame_chain contribution to
+                // the oracle's OLD `root_set` was removed in lock-step — OLD shrank,
                 // NEW unchanged, OLD ⊆ NEW ∪ KEPT preserved. SAFE: the real index collector
                 // reads NEW (`midloop_roots`), not `root_set` (verified at the
                 // `should_collect_midloop()` flip below) — so this drops no live root.
@@ -4165,14 +4164,14 @@ fn eval_trampoline_inner<C: EvalContext>(
             // root set this safepoint feeds the collector. NEW ⊇ OLD is the SAFETY
             // direction: when A4.4 flips the collector to feed from the structural
             // reader, no protected root may be dropped. Gated on
-            // `gc_mode_is_index()` because in slab mode the K-spine is empty (its
-            // push sites are index-gated) while `frame_chain` is populated, so the
-            // structural reader only mirrors the discovered set in index mode.
+            // `gc_mode_is_index()`. (Historically the slab K-spine was empty — its
+            // push sites are index-gated — while `frame_chain` was populated, so the
+            // structural reader only mirrored the discovered set in index mode.)
             // Zero-cost in release (cfg'd out). PERMANENT CI invariant (RT-7, A5
-            // COMPLETE): A5 cfg-scoped the discovery apparatus to slab, so this is now
-            // the STANDING index structural-internal-consistency check (the
-            // collect_all_roots OLD-term is cfg-walled out of index — A5.5). Kept until
-            // F4 deletes the slab apparatus. See docs/cesk-gc/a4-3-oracle-design.md.
+            // COMPLETE): A5 cfg-scoped the discovery apparatus to slab and F4 deleted
+            // it, so this is now the STANDING index structural-internal-consistency
+            // check (the collect_all_roots OLD-term is gone — A5.5).
+            // See docs/cesk-gc/a4-3-oracle-design.md.
             #[cfg(debug_assertions)]
             if crate::backend::models::metta_value::gc_mode_is_index() {
                 // OLD = the discovered set assembled above in `root_set`
@@ -4423,8 +4422,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                 //   SAFEPOINT_ROOTS channel (A5.4; the driver publishes it; ctx-independent).
                 // This is EXACTLY the NEW ∪ KEPT the A4.3 oracle (above, ~3560) just proved is a
                 // superset of the discovered OLD (collect_all_roots ∪ root_set) — so the flip is a
-                // PROVEN superset at this site. collect_all_roots()/root_set survive (still fed to
-                // the oracle's OLD) until A5 deletes the apparatus.
+                // PROVEN superset at this site. collect_all_roots()/root_set fed the
+                // oracle's OLD until A5/F4 deleted the discovery apparatus.
                 let mut midloop_roots: Vec<MettaValue> = Vec::with_capacity(root_set.len() + 64);
                 // C #D-2 (C2): narrow the K-component via Might–Shivers abstract-GC live-var
                 // marking (`collect_machine_roots_live` -> `Continuation::collect_live_values`),

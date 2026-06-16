@@ -571,7 +571,7 @@ impl MettaValue {
     /// (the `from_addr` totality assert). Register-only: no memory access.
     /// Unconditional (no cfg): pure bit arithmetic, used by the DEBUG
     /// materialization tripwire which runs whenever the RUNTIME mode is
-    /// index (slab builds flip the mode in tests).
+    /// index (always, since the slab store was removed).
     #[inline(always)]
     pub(crate) fn tag5(&self) -> u8 {
         ((self.tagged >> TAG5_SHIFT) & 0x1F) as u8

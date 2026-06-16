@@ -8,8 +8,8 @@
 //!
 //! ## Pointer Semantics
 //!
-//! TAG_PTR/TAG_ERROR payloads are store-shaped. Legacy slab builds carry
-//! `*const MettaValueInner`; index-gc builds carry arena `Addr` bits in the
+//! TAG_PTR/TAG_ERROR payloads are store-shaped. The legacy slab build carried
+//! `*const MettaValueInner`; this (index) build carries arena `Addr` bits in the
 //! pointer-width payload. The decode policy is pinned by
 //! `formal/rocq/gc/JitPayloadConversionStorePolicy.v`.
 

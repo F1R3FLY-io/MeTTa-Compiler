@@ -2189,9 +2189,9 @@ impl GenericEnvironmentShared<MettaValue> {
     /// root of the CESK machine (the part of `Reachable(⟨C,E,K⟩)` that is global,
     /// not control-flow). This inherent method is the STRUCTURAL entry point: the
     /// collector reads E₀ directly from the machine, not by discovering it through
-    /// the `ROOT_REGISTRY`. The `RootProvider` impl below delegates to it
-    /// (byte-identical) during the registry-bridge period; Phase A5 deletes the
-    /// registry and the structural collector calls this directly.
+    /// the `ROOT_REGISTRY`. The deleted `RootProvider` impl delegated to it
+    /// (byte-identical) during the registry-bridge period; A5/F4 deleted the
+    /// registry, and the structural collector now calls this directly.
     pub(crate) fn collect_roots_into(&self, roots: &mut Vec<MettaValue>) {
         // Pre-estimate capacity from all sources to eliminate Vec reallocations.
         // Read locks under quiescent GC are uncontended (ACTIVE_EVALUATORS == 0).

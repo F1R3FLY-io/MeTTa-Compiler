@@ -260,7 +260,7 @@ pub fn cache_sizes() -> (usize, usize) {
 /// delegates to, and what `collect_global_anchors` (cesk/roots.rs) calls *by
 /// name* — replacing the dynamic `ROOT_REGISTRY`/`Weak<dyn RootProvider>`
 /// dispatch with a fixed structural read. Byte-identical to the former impl
-/// body; additive (the registry path still works until Phase A5).
+/// body; additive (the dynamic registry path it replaced was deleted in A5/F4).
 pub(crate) fn collect_bytecode_cache_roots(roots: &mut Vec<MettaValue>) {
     let cache = BYTECODE_CACHE.read();
     for (_, chunk) in cache.iter() {

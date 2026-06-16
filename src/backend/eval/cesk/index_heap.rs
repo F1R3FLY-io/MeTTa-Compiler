@@ -2381,9 +2381,8 @@ pub mod index_gc {
     /// bumped-then-kept-running may still hold a guard); completeness comes from the
     /// buffer drain gated by the per-slot reified witness, not from active==0.
     ///
-    /// Live for the opt-in dedicated-rendezvous path. The slab build const-folds
-    /// `gc_mode_is_index()`, and default builds only reach this when the caller has
-    /// already gated on `dedicated_gc_enabled()`.
+    /// Live for the opt-in dedicated-rendezvous path. Default builds only reach
+    /// this when the caller has already gated on `dedicated_gc_enabled()`.
     #[inline]
     #[allow(dead_code)]
     pub fn gate_open_rendezvous() -> bool {
@@ -2473,8 +2472,7 @@ pub mod index_gc {
     /// fire there. The CALLER supplies the fanout-enabled participant gate
     /// (`dedicated_gc_enabled() && parallel_fanout_enabled() && n_threads() >= 1`),
     /// so this is pure "is the heap over a trigger watermark?" — one read-lock + a few relaxed loads. Its sole
-    /// caller short-circuits on `dedicated_gc_enabled()`, so the slab build never
-    /// reaches it (byte-identical). Keeps the watermark
+    /// caller short-circuits on `dedicated_gc_enabled()`. Keeps the watermark
     /// constants module-private (the alternative — inlining at the call site —
     /// would have to expose them).
     #[allow(dead_code)]
@@ -2845,7 +2843,7 @@ pub mod index_gc {
         // the shared Inner column is rewritten at slot reuse (`populate_column`,
         // write-point 2) before the new handle escapes, so Addr reuse cannot
         // serve a stale inner. (Not part of the slab ABA set either way.)
-        // EVAL_MEMO + MATCH_RESULT_CACHE are NOT in the slab ABA set — there they are
+        // EVAL_MEMO + MATCH_RESULT_CACHE were NOT in the slab ABA set — there they were
         // query-generation-protected under the deterministic-GC invariant, which index
         // Addr-reuse ACROSS DIRECTIVES violates (no `query_gen` bump between directives
         // of one top-level query). A reused Addr's new content must not hit a stale

@@ -711,9 +711,8 @@ thread_local! {
 /// Clear EVAL_MEMO + MATCH_RESULT_CACHE on THIS thread if a GC sweep advanced the epoch
 /// since the last check — slab-parity with `metta_value::ensure_value_hash_cache_epoch_current`.
 /// A memo MISS is always safe (recompute), so this is correctness-by-construction.
-/// `#[cfg(index-gc)]`: the slab build protects these memos via query-gen/mutation-epoch (NOT
-/// gc_sweep_epoch), so adding a gc-epoch clear there would change slab behaviour; gating to
-/// the index build keeps the slab path byte-identical.
+/// (The deleted slab store protected these memos via query-gen/mutation-epoch, NOT
+/// gc_sweep_epoch; this gc-epoch clear is the index store's equivalent.)
 #[inline]
 fn ensure_eval_caches_gc_epoch_current() {
     let current = crate::backend::models::gc_allocator::gc_sweep_epoch();

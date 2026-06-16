@@ -310,7 +310,7 @@ pub fn eval_with_tier(
         // The E₀ env + result values live inside `outcome`'s Ok/Demoted arms; the driver-C
         // program is the `state` param. NotApplicable allocates no result garbage and does
         // not drop the env, so it contributes only the global-anchor + driver-C roots.
-        // collect_all_roots() survives in the oracle's OLD until A5.
+        // collect_all_roots() fed the oracle's OLD until A5/F4 deleted it.
         let mut roots: Vec<MettaValue> = Vec::with_capacity(64);
         if let TierEvalOutcome::Ok { results, env, .. }
         | TierEvalOutcome::Demoted { results, env, .. } = &outcome

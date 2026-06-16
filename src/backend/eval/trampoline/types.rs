@@ -258,7 +258,7 @@ pub struct ParallelDispatchHandle {
     /// global `LIVE_DISPATCHES` anchor, so the dedicated GC thread can walk the
     /// branch INPUTS + completed OUTPUTS for the dispatch's lifetime
     /// (park-timing-independently). Dropping this handle (when `WaitForParallel`
-    /// is consumed) frees the anchor slot. `Some` only in the index-gc build under
+    /// is consumed) frees the anchor slot. `Some` only under
     /// `dedicated_gc_enabled()`: registration happens at dispatch construction,
     /// before worker threads have necessarily entered, so `n_threads()>1` is a
     /// racy runtime-collection predicate and must not gate the anchor. `None`

@@ -49,8 +49,8 @@ pub type GenericMorkResult<V, F> = (Vec<V>, GenericEnvironment<V, F>);
 ///
 /// TypeId-gated `V == MettaValue` + slice transmute (the established VM pattern,
 /// `bytecode/vm/mod.rs::run_cooperative_safepoint`); for non-`MettaValue`
-/// monomorphizations the body dead-code-eliminates. `#[cfg(index-gc)]`: the dedicated
-/// rendezvous is an index-only construct.
+/// monomorphizations the body dead-code-eliminates. The dedicated rendezvous is
+/// an index-only construct.
 #[inline]
 fn mork_liveness_poll<V>(
     counter: &mut u64,

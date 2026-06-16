@@ -589,8 +589,8 @@ pub async fn resume_shipped(buf: &[u8], into: &MettaState) -> Result<(), String>
 }
 
 /// E1-c (F1, design §1.1): one batch expression's gathered outcome. Carries the
-/// original index, the complete result value set, the output flag, and — ONLY in the
-/// index-gc build — the persistent [`SafepointRootHandle`] that keeps every result
+/// original index, the complete result value set, the output flag, and the
+/// persistent [`SafepointRootHandle`] that keeps every result
 /// value rooted in `SAFEPOINT_ROOTS` (driver-C) from BEFORE the worker's `EvalGuard`
 /// drops until the caller has copied the values into `MettaState.output` (structurally
 /// reachable as driver program control via `collect_driver_program_roots`). The async
@@ -721,9 +721,8 @@ async fn evaluate_batch_parallel_arena(
                 // the caller only publishes final MettaValue outputs here; clone is a
                 // cheap Copy of arena handles.
                 //
-                // BYTE-IDENTICAL WHEN DORMANT: the `#[cfg(index-gc)]` wall + the
-                // `dedicated_gc_enabled()`-first short-circuit ⇒ slab does not compile
-                // it; index-default leaves the handle None.
+                // BYTE-IDENTICAL WHEN DORMANT: the `dedicated_gc_enabled()`-first
+                // short-circuit leaves the handle `None` by default.
                 let root_handle = if crate::backend::models::gc_allocator::dedicated_gc_enabled()
                 {
                     Some(crate::backend::models::register_temporary_roots(
@@ -765,7 +764,7 @@ async fn evaluate_batch_parallel_arena(
     }
 
     // Collect results, unwrap Options, sort by original index. Each BatchOutcome
-    // carries (in the index-gc build) its persistent-root handle, which MUST NOT be
+    // carries its persistent-root handle, which MUST NOT be
     // dropped here — it rides to `run_state_async`, which drops it only AFTER copying
     // the values into MettaState.output. Dropping it here would un-root the result
     // before the caller consumes it → UAF.

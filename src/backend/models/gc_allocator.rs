@@ -3050,8 +3050,8 @@ pub(crate) fn already_bumped_this_cycle(gen: u64) -> bool {
 // never-realloc chunk list (A-straddle-2: a value-snapshot would miss a slot re-occupied
 // AFTER the snapshot instant → sweep-without-waiting → UAF).
 //
-// `#[cfg(index-gc)] && dedicated_gc_enabled()` walls at the wiring sites keep
-// slab byte-identical while making the index dedicated driver the default.
+// `dedicated_gc_enabled()` gates at the wiring sites keep the dormant path
+// byte-identical while making the index dedicated driver the default.
 
 /// One witness slot — owned by exactly one mutator thread for its lifetime (the
 /// thread-local [`MY_WITNESS_SLOT`] points at it; slots are grow-only and never
@@ -3793,7 +3793,7 @@ pub(crate) fn worker_park_and_root_in_cycle(roots: &[MettaValue], my_gen: u64) {
             // driver's cycle-end gen bump (same mutex) and the parker's notify
             // (above) is never lost. The finishers + the zero-root drop bump get NO
             // note_reified_park ⇒ they can NEVER satisfy the witness BY CONSTRUCTION.
-            // SLAB-BYTE-IDENTICAL: #[cfg(index-gc)] wall + index-mode gate.
+            // BYTE-IDENTICAL WHEN DORMANT: the `dedicated_gc_enabled()` gate.
             {
                 if dedicated_gc_enabled() {
                     note_reified_park(my_gen);
@@ -4643,7 +4643,7 @@ impl EvalGuard {
                 // `n` snapshot is also present (occupied) in the witness snapshot. The
                 // slot stays occupied continuously from here to the OUTERMOST drop
                 // (across parks) — DECOUPLED from N_THREADS (which releases at a park).
-                // SLAB-BYTE-IDENTICAL: #[cfg(index-gc)] wall + index-mode gate.
+                // BYTE-IDENTICAL WHEN DORMANT: the `dedicated_gc_enabled()` gate.
                 {
                     if dedicated_gc_enabled() {
                         witness_acquire_slot();
@@ -4678,7 +4678,7 @@ impl Drop for EvalGuard {
                     // is_gc_requested() load, only on depth 1→0). worker_finish_into_buffer
                     // locks a parking_lot mutex (no poison, unwind-safe) + only infallible
                     // ops, so it is safe during a panic-unwind drop (no double-panic).
-                    // SLAB-BYTE-IDENTICAL: #[cfg(index-gc)] wall + index-mode gate.
+                    // BYTE-IDENTICAL WHEN DORMANT: the `dedicated_gc_enabled()` gate.
                     {
                         if dedicated_gc_enabled() && is_gc_requested() {
                             let my_gen = current_cycle_gen();

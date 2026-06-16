@@ -2294,9 +2294,9 @@ impl GenericEnvironmentShared<MettaValue> {
 
 // E1-FLIP Path B V4 (B2′): expose `GenericEnvironmentShared<MettaValue>` to the
 // dedicated-GC-thread driver's global live-env registry. The body is EXACTLY the
-// verified-complete structural E₀ reader above — zero new traversal. `#[cfg(index-gc)]`
-// because the `EnvRoots` trait + the `LIVE_ENVS` registry are index-only (in slab the
-// env is walked via the structural quiescence reader, not this registry).
+// verified-complete structural E₀ reader above — zero new traversal. The `EnvRoots`
+// trait + the `LIVE_ENVS` registry are index-only (the deleted slab build walked the
+// env via the structural quiescence reader, not this registry).
 impl crate::backend::models::gc_allocator::EnvRoots for GenericEnvironmentShared<MettaValue> {
     fn collect_env_roots(&self, out: &mut Vec<MettaValue>) {
         self.collect_roots_into(out);

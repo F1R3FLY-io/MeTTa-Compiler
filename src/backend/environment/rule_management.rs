@@ -5054,9 +5054,8 @@ where
         }
         // SAFETY: V == MettaValue (TypeId guard above) and, for the MettaValue
         // monomorphization, F is the active value factory `ActiveFactory`
-        // (`IndexFactory` in the default index build, or slab `GcFactory` under
-        // the legacy slab opt-out). Reinterpreting `&F` as
-        // `*const ActiveFactory` is therefore an identity cast.
+        // (`IndexFactory`). Reinterpreting `&F` as `*const ActiveFactory` is
+        // therefore an identity cast.
         let factory_ptr = &self.factory as *const F as *const crate::backend::models::ActiveFactory;
         let gc_factory: crate::backend::models::ActiveFactory = unsafe { *factory_ptr };
         let expr_mv: &crate::backend::models::MettaValue =

@@ -689,10 +689,10 @@ mod inc2_mode_tests {
         }
     }
 
-    // (cfg-gate) Asserts the legacy slab decode mode is Slab and that a slab
-    // heap value carries no arena Addr. In the default `index-gc` build the
-    // compiled store is Index and `global_factory()` yields index handles, so
-    // this slab-mode invariant is false by design.
+    // (The legacy slab build asserted the decode mode was Slab and that a slab
+    // heap value carried no arena Addr; that invariant was removed with the slab
+    // store. This build's compiled store is Index and `global_factory()` yields
+    // index handles.)
 }
 
 /// The actual value enum, allocated in the arena.

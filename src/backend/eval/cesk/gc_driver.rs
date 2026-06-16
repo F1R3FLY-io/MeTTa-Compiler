@@ -413,8 +413,8 @@ fn gc_driver_satb_rendezvous_cycle(
 /// EXISTING A4.3 midloop oracle (eval_loop.rs ~3915), which proves the FULL structural
 /// machine reader ⊇ the independently-discovered `root_set` over LIVE S/C/K. Together
 /// (a)+(b)+A4.3 discharge `reachable(R) ⊇ every live value`. Debug-only; zero-cost in
-/// release (the call site is `#[cfg(debug_assertions)]`). `#[cfg(index-gc)]`: the
-/// dispatch-witness helper it calls is index-only (the anchor is too).
+/// release (the call site is `#[cfg(debug_assertions)]`). The dispatch-witness
+/// helper it calls is index-only (the anchor is too).
 #[cfg(debug_assertions)]
 fn assert_rendezvous_union_complete(roots: &[MettaValue], n_snapshot: u32) {
     use crate::backend::models::gc_allocator as ga;

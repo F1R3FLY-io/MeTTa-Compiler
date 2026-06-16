@@ -5,17 +5,16 @@
 //! Rust-local `Vec` the caller iterates AFTER the inner trampoline returns, so
 //! they are not yet in any C/K register).
 //!
-//! ## The two builds (the A5 cfg seam)
+//! ## Root pinning (post-F4: index is the only build)
 //!
-//! - **index-gc**: push ONLY the typed K-spine `ExprVec` record
-//!   ([`SuspendedActivation::ExprVec`](crate::backend::eval::cesk::k_spine::SuspendedActivation)).
-//!   The index collector reads roots structurally from the K-spine — no
-//!   `frame_chain`.
-//! - **legacy slab opt-out**: push ONLY the `frame_chain` frame
-//!   ([`EvalFrameGuard::push_vec`](crate::backend::eval::frame_chain::EvalFrameGuard)).
-//!   The slab collector walks the frame chain.
+//! Push ONLY the typed K-spine `ExprVec` record
+//! ([`SuspendedActivation::ExprVec`](crate::backend::eval::cesk::k_spine::SuspendedActivation)).
+//! The index collector reads roots structurally from the K-spine — no
+//! `frame_chain`. (The deleted slab build instead pushed a `frame_chain` frame
+//! that the slab collector walked; that path and the `frame_chain` module are
+//! gone.)
 //!
-//! Both arms record a raw pointer to the SAME live `Vec`, read at collection
+//! The record holds a raw pointer to the live `Vec`, read at collection
 //! time (never cloned at push — see the k_spine staleness discipline). The two
 //! arms are PROVEN root-equivalent: the K-spine `ExprVec` arm's
 //! `extend_from_slice` is byte-identical to `frame_chain::collect_vec_roots`

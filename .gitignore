@@ -49,3 +49,5 @@ repos/
 
 .pgmcp.toml
 .nia.cache
+
+states/

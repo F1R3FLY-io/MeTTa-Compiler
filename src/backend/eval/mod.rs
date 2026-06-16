@@ -76,11 +76,7 @@ pub type EvalResult = (SmallVec<[MettaValue; 2]>, MettaEnvironment);
 
 /// The return type of the public [`eval`] entry point.
 ///
-/// In the **legacy slab opt-out** build this is EXACTLY [`EvalResult`] (the
-/// `(results, env)` 2-tuple) — the slab signature is UNCHANGED, so existing slab
-/// callers compile verbatim.
-///
-/// In the **default `index-gc`** build it gains a third element: an
+/// This is the `(results, env)` pair plus a third element: an
 /// `Option<SafepointRootHandle>` carrying the E1-FLIP Path B V4 **B3
 /// directive-exit leaving-park** handle. B3 registers
 /// the leaving root set (`reach(E₀) ∪ results`) into the gen-unconditional `SAFEPOINT_ROOTS`
@@ -94,10 +90,8 @@ pub type EvalResult = (SmallVec<[MettaValue; 2]>, MettaEnvironment);
 ///
 /// Production callers therefore bind the third element to a NAMED local (NOT `_`) whose
 /// scope outlives result consumption; test callers (no concurrent GC under DEDICATED-off)
-/// use the `(results, env, ..)` rest-pattern, which is valid for BOTH the
-/// 2-tuple (legacy slab) and the 3-tuple (default index-gc) and harmlessly drops
-/// the always-`None` handle.
-/// See [`EvalReturn`] (slab variant). The third element rides the B3 leaving-park handle.
+/// use the `(results, env, ..)` rest-pattern, which harmlessly drops the
+/// often-`None` handle. The third element rides the B3 leaving-park handle.
 pub type EvalReturn = (
     SmallVec<[MettaValue; 2]>,
     MettaEnvironment,
@@ -285,7 +279,7 @@ pub fn eval(
         // `env` is moved into `eval_inner`; the RAII handle is held for the whole
         // `_guard` scope (so E₀ is covered for the directive's lifetime). Covers the
         // CoW-forked child bindings via the branch-spawn registration too (granularity
-        // (a)). BYTE-IDENTICAL WHEN DORMANT: #[cfg(index-gc)] wall + dedicated-first.
+        // (a)). BYTE-IDENTICAL WHEN DORMANT: `dedicated_gc_enabled()`-first short-circuit.
         let _live_env_handle = {
             if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
                 let dyn_env: std::sync::Arc<dyn crate::backend::models::gc_allocator::EnvRoots> =
@@ -380,15 +374,15 @@ pub fn eval(
     // UNIONED with the about-to-be-returned result values (held here in a Rust
     // local, not yet in any RootProvider).
     //
-    // Dead in the legacy slab opt-out build: `gc_mode_is_index()` const-folds
-    // to `false` when `index-gc` is off, so the slab path is byte-identical.
-    // Cheap pre-check (gate + watermark) avoids the `collect_all_roots()` walk on
+    // (The `should_collect()` guard below was dead in the deleted slab build,
+    // where `gc_mode_is_index()` was false.)
+    // Cheap pre-check (gate + watermark) avoids the full structural-root walk on
     // every eval; only build the root set when a collection will actually fire.
     if crate::backend::eval::cesk::index_heap::index_gc::should_collect() {
-        // ── A4.4 quiescence machine-equivalence oracle (debug-only; index-gc only) ──
+        // ── A4.4 quiescence machine-equivalence oracle (debug-only) ──
         // Asserts the structural-persistent feed below covers the discovered set the
-        // BEFORE feed used (collect_all_roots ∪ result). Gated on gc_mode_is_index()
-        // (slab has no structural mirror for frame-chain roots). PERMANENT CI invariant.
+        // BEFORE feed used (the former collect_all_roots ∪ result). Gated on
+        // gc_mode_is_index() (always true now). PERMANENT CI invariant.
         #[cfg(debug_assertions)]
         if crate::backend::models::metta_value::gc_mode_is_index() {
             crate::backend::eval::cesk::roots::assert_quiescence_superset(

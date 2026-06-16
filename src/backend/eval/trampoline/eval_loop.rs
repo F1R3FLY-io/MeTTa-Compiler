@@ -346,7 +346,7 @@ fn clear_worker_caches_on_resume() {
 /// publish copies `Addr`s by value into a GC-thread-owned `Vec`, so clearing the
 /// source thread-local afterwards is race-free). BYTE-IDENTICAL when dormant: the
 /// `Drop` body is a single `dedicated_gc_enabled()` load that short-circuits OFF by
-/// default; the struct is `#[cfg(index-gc)]`.
+/// default.
 struct WorkerCacheTeardownGuard;
 impl Drop for WorkerCacheTeardownGuard {
     #[inline]
@@ -2688,7 +2688,7 @@ fn parallel_dispatch(
             // parent's (core.rs:916), which the parent's eval/mod.rs registration does
             // NOT cover. Registered BEFORE `env` is moved into the eval; the RAII
             // handle is held for the whole closure body (the worker's lifetime).
-            // SLAB-BYTE-IDENTICAL: #[cfg(index-gc)] wall + index-mode gate.
+            // BYTE-IDENTICAL WHEN DORMANT: the `dedicated_gc_enabled()` gate.
             let _worker_live_env = {
                 if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
                     let dyn_env: Arc<dyn crate::backend::models::gc_allocator::EnvRoots> =
@@ -3443,8 +3443,8 @@ fn parallel_collapse_dispatch(
             // (the observed nondeterministic wrong-subset corruption under
             // FANOUT=8 dedicated rendezvous collection). Registered BEFORE `env` is moved into the eval
             // at `:3432`; the RAII handle is held for the whole closure body (the
-            // worker's lifetime). Slab stays byte-identical through the
-            // #[cfg(index-gc)] wall and `dedicated_gc_enabled()` short-circuit.
+            // worker's lifetime). Byte-identical when dormant via the
+            // `dedicated_gc_enabled()` short-circuit.
             let _worker_live_env = {
                 if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
                     let dyn_env: Arc<dyn crate::backend::models::gc_allocator::EnvRoots> =
@@ -3897,8 +3897,8 @@ fn eval_trampoline_inner<C: EvalContext>(
     // once, mutated in place). The collector
     // ([`collect_trampoline_frame_roots`]) walks their CURRENT contents.
     //
-    // Gated on `gc_mode_is_index()`: in the legacy slab opt-out build no frame
-    // is pushed, so the slab frame-chain walk is byte-identical to before. The
+    // Gated on `gc_mode_is_index()` (always true now; the deleted slab build
+    // pushed no frame here, keeping its frame-chain walk byte-identical). The
     // `TrampolineFrameRoots` struct and guard are stack locals that drop at
     // function exit; the raw pointers they hold name in-scope `Vec`s.
     //
@@ -4300,11 +4300,10 @@ fn eval_trampoline_inner<C: EvalContext>(
             // (`active_evaluator_count() == 1`) — the trivially-true instance of
             // the proven `QuiescenceInvariant`, so it is safe by construction.
             //
-            // Dead in the legacy slab opt-out build: `gc_mode_is_index()` (the
-            // first conjunct of the gate, checked inside the cheap pre-check)
-            // const-folds to `false` when `index-gc` is off, so this whole block
-            // is a single perfectly-predicted false branch off the reduction hot
-            // path.
+            // (Was dead in the deleted slab build, where `gc_mode_is_index()` —
+            // the first conjunct of the gate, checked inside the cheap pre-check —
+            // const-folded to `false`; the block was a single perfectly-predicted
+            // false branch off the reduction hot path.)
             // Independent of `ctx.should_safepoint()`: the index GC's own
             // committed-bytes watermark drives the trigger (the slab `is_gc_
             // requested()`-gated safepoint dance below is a separate path).

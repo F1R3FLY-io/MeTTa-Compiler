@@ -110,10 +110,11 @@ require_no_failures conf "${P}_conf.log"
 echo "per-module PASS counts:"
 grep ': PASS' "${P}_conf.log" | sed -E 's#/.*##' | sort | uniq -c
 
-echo "### 4b WARNINGS — mettatron lib (0-new-warnings gate; A5 baseline = 49 BOTH builds)."
+echo "### 4b WARNINGS — mettatron lib (0-new-warnings gate; F4 R-final baseline = 47, down from"
+echo "    the A5 baseline of 49 — the slab-GC deletion removed 2 dead-code warnings. Index is the only build)."
 echo "    (nextest logs report '(lib test)' which is noisy; cargo check gives the clean '(lib)' count.)"
 run_logged wcheck_index "${P}_wcheck_index.log" "${CAP[@]}" cargo check
-require_warning_count "index lib" "${P}_wcheck_index.log" 49
+require_warning_count "index lib" "${P}_wcheck_index.log" 47
 
 if [[ "$WITH_ORACLE" == "1" ]]; then
   echo "### 5 DEFAULT-INDEX conformance DEBUG (machine-equivalence oracle, MAX_BYTES=1MiB; expect 0 panics, 483 pass)"

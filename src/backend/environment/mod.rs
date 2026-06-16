@@ -21,8 +21,8 @@
 //! The `GenericEnvironment<V, F>` type is parameterized over value type `V` and factory `F`.
 //! This enables zero-conversion evaluation with different allocation strategies:
 //!
-//! - `MettaEnvironment` = `GenericEnvironment<MettaValue, GcFactory>` (O(1) Arc clone)
-//! - `MettaEnvironment` = `GenericEnvironment<MettaValue, GcFactory>` (slab-allocated)
+//! - `MettaEnvironment` = `GenericEnvironment<MettaValue, ActiveFactory>`
+//!   (= `IndexFactory`; O(1) Arc clone; values allocated in the CESK index arena)
 
 mod act_persistence;
 pub(crate) mod act_tiered;

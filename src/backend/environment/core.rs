@@ -495,7 +495,7 @@ pub(crate) const RULE_PREFIX_LEN: usize = 10;
 /// This is the main entry point for zero-conversion evaluation. Use type aliases
 /// for convenience:
 ///
-/// - `MettaEnvironment` = `GenericEnvironment<MettaValue, GcFactory>`
+/// - `MettaEnvironment` = `GenericEnvironment<MettaValue, ActiveFactory>` (= `IndexFactory`)
 ///
 /// ## Copy-on-Write (CoW) Semantics
 ///

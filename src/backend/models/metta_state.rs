@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, MutexGuard};
 
-use super::gc_allocator::GcFactory;
 use super::MettaValue;
 use crate::backend::environment::MettaEnvironment;
 
@@ -105,18 +104,6 @@ impl MettaState {
             gc_roots,
             environment,
         }
-    }
-
-    /// Get the factory for allocating values.
-    ///
-    /// Returns a `GcFactory` backed by the global `SlabAllocator`.
-    #[inline]
-    pub fn factory(&self) -> GcFactory {
-        // Construct the concrete slab factory directly. `global_factory()` is now
-        // feature-polymorphic (returns `ActiveFactory`), so it can no longer
-        // satisfy this concrete `GcFactory` return type. Byte-identical to the
-        // previous body in the default build.
-        GcFactory::new(super::gc_allocator::global_allocator())
     }
 
     /// Lock and access the source expressions.

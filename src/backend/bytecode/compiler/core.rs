@@ -2134,7 +2134,7 @@ where
 // =============================================================================
 
 use crate::backend::eval::trampoline::get_static_factory;
-use crate::backend::models::{GcFactory, MettaValue};
+use crate::backend::models::MettaValue;
 
 /// Compile an MettaValue expression to bytecode (zero-conversion).
 ///
@@ -2155,6 +2155,3 @@ pub fn compile_bytecode_arc(
     let factory = get_static_factory();
     compile_generic_arc(name, expr, factory)
 }
-
-/// Type alias for arena bytecode compiler
-pub type MettaCompiler = GenericCompiler<MettaValue, GcFactory>;

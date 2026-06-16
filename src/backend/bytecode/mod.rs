@@ -137,7 +137,6 @@ pub use compiler::{compile, compile_arc, CompileContext, CompileError, CompileRe
 // Generic compiler for zero-conversion support
 pub use compiler::core::{
     compile_bytecode, compile_bytecode_arc, compile_generic, compile_generic_arc, GenericCompiler,
-    MettaCompiler,
 };
 pub use external_registry::{
     ExternalContext,

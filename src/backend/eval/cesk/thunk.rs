@@ -75,9 +75,16 @@ pub struct Thunk<V: MettaValueTrait> {
     /// Number of times this thunk has been accessed.
     pub access_count: u32,
 
-    /// Mutation epoch when this thunk was evaluated.
-    /// Used to detect stale entries after space mutations.
+    /// Mutation epoch (thread-local) when this thunk was evaluated.
+    /// Used to detect stale entries after this thread's space mutations.
     pub mutation_epoch: u64,
+
+    /// #309/#266: process-global space-mutation epoch when this thunk was
+    /// evaluated. A cross-thread mutation of the SHARED atom-space bumps it, so
+    /// a stale thunk result is rejected on lookup by any worker (parity with
+    /// `TableEntry::space_epoch`; the thread-local `mutation_epoch` alone cannot
+    /// observe a sibling worker's `add-atom`).
+    pub space_epoch: u64,
 
     /// Scope generation when this thunk was evaluated.
     /// Used for cache isolation between nondeterministic branches.
@@ -92,6 +99,7 @@ impl<V: MettaValueTrait> Thunk<V> {
             results: SmallVec::new(),
             access_count: 0,
             mutation_epoch: 0,
+            space_epoch: 0,
             scope_gen: crate::backend::eval::trampoline::dispatch_hints::cache_generation(),
         }
     }
@@ -255,8 +263,14 @@ impl<V: MettaValueTrait + Clone + 'static> ThunkTable<V> {
                     // space mutation must not be returned.
                     let current_epoch =
                         crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
-                    if thunk.mutation_epoch != current_epoch {
-                        // Stale — evict and treat as new
+                    let current_space_epoch =
+                        crate::backend::eval::trampoline::dispatch_hints::space_mutation_epoch();
+                    if thunk.mutation_epoch != current_epoch
+                        || thunk.space_epoch != current_space_epoch
+                    {
+                        // Stale — evict and treat as new. The space-epoch check
+                        // (#309/#266) rejects a thunk whose result predates a
+                        // cross-thread shared-space mutation.
                         self.remove_thunk_with_satb(expr_hash);
                         self.insert_thunk_with_satb(expr_hash, Thunk::new_suspended());
                         return ThunkLookup::Absent;
@@ -287,6 +301,8 @@ impl<V: MettaValueTrait + Clone + 'static> ThunkTable<V> {
                     thunk.results = results;
                     thunk.mutation_epoch =
                         crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
+                    thunk.space_epoch =
+                        crate::backend::eval::trampoline::dispatch_hints::space_mutation_epoch();
                     thunk.scope_gen =
                         crate::backend::eval::trampoline::dispatch_hints::cache_generation();
                 },

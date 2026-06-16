@@ -117,8 +117,15 @@ pub struct TableEntry<V: MettaValueTrait + Clone> {
     /// Number of times this entry was looked up (diagnostics).
     pub hit_count: u32,
 
-    /// Mutation epoch when this entry was created.
+    /// Mutation epoch (thread-local) when this entry was created.
     pub mutation_epoch: u64,
+
+    /// Process-global space-mutation epoch (#309/#266) when this entry was
+    /// created. A cross-thread `add-atom` to the shared atom-space bumps it, so
+    /// a stale (especially negative/empty) tabled subgoal result is rejected on
+    /// lookup by ANY worker — closing the parallel under-production hole where a
+    /// sibling's derived fact never invalidated this thread's tabled empty.
+    pub space_epoch: u64,
 
     /// Scope generation when this entry was created.
     /// Used for cache isolation between nondeterministic branches.
@@ -238,11 +245,28 @@ impl<V: MettaValueTrait + Clone + 'static> SubgoalTable<V> {
     /// Returns `Complete(results)` on cache hit, `Absent` on miss.
     /// Stale entries (mutation epoch mismatch) are evicted.
     pub fn lookup(&mut self, expr_hash: u64) -> TableLookup<V> {
+        // #309/#266 kill-switch: `METTATRON_DISABLE_EVAL_CACHES=1` also disables
+        // the SubgoalTable memo (the flag historically covered only EVAL_MEMO +
+        // MATCH_RESULT_CACHE, leaving this — the dominant recursive-PLN cache —
+        // live). Cycle detection (the active-eval set, upstream of this lookup)
+        // is unaffected, so termination is preserved; this only forces
+        // recomputation of completed subgoals.
+        if crate::backend::eval::trampoline::dispatch_hints::eval_caches_disabled() {
+            self.total_misses += 1;
+            return TableLookup::Absent;
+        }
         let current_epoch = crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
+        let current_space_epoch =
+            crate::backend::eval::trampoline::dispatch_hints::space_mutation_epoch();
 
         if let Some(entry) = self.entries.get_mut(&expr_hash) {
-            if entry.mutation_epoch != current_epoch {
-                // Stale — evict (epoch mismatch)
+            if entry.mutation_epoch != current_epoch || entry.space_epoch != current_space_epoch {
+                // Stale — evict. Thread-local `mutation_epoch` mismatch (this
+                // thread's own side effect) OR #309/#266 cross-thread
+                // `space_epoch` mismatch: a sibling worker mutated the SHARED
+                // atom-space after this entry was tabled, so a tabled result
+                // (including a negative/empty one) computed before that fact
+                // existed must not be served.
                 self.remove_entry_with_satb(expr_hash);
                 self.total_misses += 1;
                 return TableLookup::Absent;
@@ -268,6 +292,8 @@ impl<V: MettaValueTrait + Clone + 'static> SubgoalTable<V> {
     /// watermark) and query_generation (per-`!` watermark) on lookup.
     pub fn complete(&mut self, expr_hash: u64, results: SmallVec<[V; 2]>) {
         let epoch = crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
+        let space_epoch =
+            crate::backend::eval::trampoline::dispatch_hints::space_mutation_epoch();
         let gen = crate::backend::eval::trampoline::dispatch_hints::cache_generation();
         self.insert_entry_with_satb(
             expr_hash,
@@ -275,6 +301,7 @@ impl<V: MettaValueTrait + Clone + 'static> SubgoalTable<V> {
                 results,
                 hit_count: 0,
                 mutation_epoch: epoch,
+                space_epoch,
                 scope_gen: gen,
             },
         );

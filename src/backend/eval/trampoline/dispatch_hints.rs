@@ -481,7 +481,44 @@ thread_local! {
     static QUERY_GENERATION: Cell<u64> = const { Cell::new(0) };
 }
 
-type EvalMemoEntry = (u64, u64, u64, SmallVec<[MettaValue; 4]>);
+/// **Process-global space-mutation epoch — #309/#266 fix (2026-06-16).**
+///
+/// The thread-local `MUTATION_EPOCH` above invalidates a thread's OWN caches on
+/// its OWN space mutations, but `fork_for_nondeterminism` Arc-clones the
+/// atom-space, so parallel branches SHARE it. A sibling worker's `add-atom`
+/// therefore mutates the space every worker can `match` while bumping only the
+/// mutating thread's epoch — so a worker that cached an EMPTY (negative) result
+/// for a query kept serving it after the deriving fact existed, silently
+/// dropping whole derived layers under contention. This GLOBAL epoch is bumped
+/// on every space mutation (`invalidate_space_mutation_caches`) and compared by
+/// `EVAL_MEMO` and the `SubgoalTable`, so a cross-thread mutation invalidates
+/// every thread's stale entries. Mirrors the existing global `RULE_EPOCH`
+/// (which covers rule, not fact, changes). The thread-local `MUTATION_EPOCH`
+/// is retained for within-thread sequential-branch isolation (it is rewound by
+/// `set_mutation_epoch`; a monotonic global cannot be, hence the separate tag).
+static SPACE_MUTATION_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Current process-global space-mutation epoch. Acquire pairs with the bump's
+/// Release so a reader that observes the new epoch also observes the space
+/// write that preceded it.
+#[inline]
+pub fn space_mutation_epoch() -> u64 {
+    SPACE_MUTATION_EPOCH.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Bump the process-global space-mutation epoch. Called from
+/// `invalidate_space_mutation_caches` on every shared/CoW space mutation so the
+/// new value is observed cross-thread.
+#[inline]
+pub fn bump_space_mutation_epoch() {
+    SPACE_MUTATION_EPOCH.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+}
+
+/// EVAL_MEMO entry: `(query_gen, mutation_epoch, space_epoch, scope_gen, entries)`.
+/// `space_epoch` (#309/#266) is the process-global [`space_mutation_epoch`] at
+/// fill time; a cross-thread space mutation bumps it, so a stale (especially
+/// negative/empty) entry is rejected on lookup by ANY thread.
+type EvalMemoEntry = (u64, u64, u64, u64, SmallVec<[MettaValue; 4]>);
 
 /// Returns the current query generation for this thread.
 ///
@@ -684,7 +721,7 @@ pub fn eval_memo_key(expr_hash: u64, tracked_key: u64) -> u64 {
 /// cached σ-`Addr` was swept+reused in the no-park window) vs VALUE_HASH_CACHE (now
 /// epoch-healed), the bloom (its own kill-switch), or a MISSED ROOT (none of the caches
 /// — which would redirect the diagnosis to rooting).
-fn eval_caches_disabled() -> bool {
+pub(crate) fn eval_caches_disabled() -> bool {
     static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *DISABLED.get_or_init(|| {
         std::env::var("METTATRON_DISABLE_EVAL_CACHES")
@@ -726,7 +763,7 @@ fn ensure_eval_caches_gc_epoch_current() {
 }
 
 #[inline]
-fn shade_evicted_eval_memo_entry((_query_gen, _epoch, _gen, entries): EvalMemoEntry) {
+fn shade_evicted_eval_memo_entry((_query_gen, _epoch, _space_epoch, _gen, entries): EvalMemoEntry) {
     crate::backend::eval::cesk::index_heap::index_gc::satb_shade_evicted_roots(entries);
 }
 
@@ -737,17 +774,19 @@ pub fn eval_memo_get(expr_hash: u64, tracked_key: u64) -> Option<Vec<MettaValue>
     ensure_eval_caches_gc_epoch_current();
     let expr_hash = eval_memo_key(expr_hash, tracked_key);
     let current_epoch = mutation_epoch();
+    let current_space_epoch = space_mutation_epoch();
     let current_query_gen = query_generation();
     EVAL_MEMO.with(|memo_cell| {
         let mut memo = memo_cell.borrow_mut();
         // get_mut: single hash lookup for the hot path (valid hit).
         // NLL allows pop after the if-let borrow ends.
         let mut stale = false;
-        if let Some((cached_query_gen, cached_epoch, cached_gen, entries)) =
+        if let Some((cached_query_gen, cached_epoch, cached_space_epoch, cached_gen, entries)) =
             memo.get_mut(&expr_hash)
         {
             if *cached_query_gen == current_query_gen
                 && *cached_epoch == current_epoch
+                && *cached_space_epoch == current_space_epoch
                 && is_scope_visible(*cached_gen)
             {
                 return Some(entries.to_vec());
@@ -777,6 +816,7 @@ pub fn eval_memo_put(expr_hash: u64, tracked_key: u64, results: &[MettaValue]) {
     let expr_hash = eval_memo_key(expr_hash, tracked_key);
     let query_gen = query_generation();
     let epoch = mutation_epoch();
+    let space_epoch = space_mutation_epoch();
     let gen = cache_generation();
     let entries: SmallVec<[MettaValue; 4]> = results.iter().copied().collect();
     EVAL_MEMO.with(|memo_cell| {
@@ -785,7 +825,7 @@ pub fn eval_memo_put(expr_hash: u64, tracked_key: u64, results: &[MettaValue]) {
             |satb_active| {
                 // E2 SATB LRU barrier: `push` returns same-key overwrites and
                 // capacity victims, unlike `put`, whose capacity eviction is silent.
-                let evicted = memo.push(expr_hash, (query_gen, epoch, gen, entries));
+                let evicted = memo.push(expr_hash, (query_gen, epoch, space_epoch, gen, entries));
                 if satb_active {
                     if let Some((_key, entry)) = evicted {
                         shade_evicted_eval_memo_entry(entry);
@@ -803,7 +843,7 @@ pub fn eval_memo_put(expr_hash: u64, tracked_key: u64, results: &[MettaValue]) {
 pub fn collect_eval_memo_roots(out: &mut Vec<MettaValue>) {
     EVAL_MEMO.with(|memo_cell| {
         let memo = memo_cell.borrow();
-        for (_hash, (_query_gen, _epoch, _gen, entries)) in memo.iter() {
+        for (_hash, (_query_gen, _epoch, _space_epoch, _gen, entries)) in memo.iter() {
             out.extend_from_slice(entries);
         }
     });
@@ -820,7 +860,7 @@ pub fn clear_eval_memo() {
             |satb_active| {
                 if satb_active {
                     let mut roots = Vec::new();
-                    for (_hash, (_query_gen, _epoch, _gen, entries)) in memo.iter() {
+                    for (_hash, (_query_gen, _epoch, _space_epoch, _gen, entries)) in memo.iter() {
                         roots.extend_from_slice(entries);
                     }
                     crate::backend::eval::cesk::index_heap::index_gc::satb_shade_evicted_roots(

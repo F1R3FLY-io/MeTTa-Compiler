@@ -411,7 +411,7 @@ use super::dispatch_hints::{
     derive_arg_expected_type, enter_fork_scope, eval_memo_get, eval_memo_put,
     increment_mutation_epoch, is_memoized_normal_form, is_normal_form_bounded, leave_fork_scope,
     memoize_normal_form, mutation_epoch, next_branch_scope, set_mutation_epoch,
-    should_memoize_with_env,
+    should_memoize_with_env, space_mutation_epoch,
 };
 use super::dispatch_hints::{is_embedded_kernel_op, is_reducible_head};
 use super::engine::{try_deterministic_chain, try_match_rules_with_bindings};
@@ -4849,6 +4849,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     env: env.clone(),
                                     depth,
                                     start_epoch: mutation_epoch(),
+                                    start_space_epoch: space_mutation_epoch(),
                                 });
                             }
                         }
@@ -5169,6 +5170,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             continuations.push(Continuation::MemoizeResult {
                                 expr_hash: h,
                                 mutation_epoch: mutation_epoch(),
+                                start_space_epoch: space_mutation_epoch(),
                                 env: env.clone(),
                                 depth,
                             });
@@ -6116,8 +6118,32 @@ fn eval_trampoline_inner<C: EvalContext>(
                             });
 
                             // 8.7: if-condition always expects Bool — prune non-Bool branches.
-                            // Demand::Exactly(1): `if` only examines the first result
-                            // for boolean test (line ~4918: `cond_results.first()`).
+                            //
+                            // Bug #309/#266 fix (2026-06-16): gather ALL condition
+                            // results (`Demand::All`), NOT `Exactly(1)`. `if` is
+                            // HE-faithful rules (`(= (if True $t $e) $t)` /
+                            // `(= (if False $t $e) $e)`), so a *nondeterministic*
+                            // condition must fan out across EVERY result
+                            // (`ProcessIfCondition`, the `cond_results.len() > 1`
+                            // path ~line 12024). Under parallel dispatch,
+                            // `Exactly(1)` drains a TIMING-DEPENDENT count of
+                            // completed condition branches — the bounded-demand
+                            // merge takes whatever slots are `Some` at
+                            // satisfaction-time (eval_loop.rs ~15584,
+                            // `require_all_slots = false`), not exactly one — so the
+                            // fan-out cardinality, and thus the whole result set,
+                            // became nondeterministic under CPU contention (silent
+                            // subset drops + occasional RSS-runaway OOM; the prior
+                            // `cond_results.len()` comment was wrong — `if` does NOT
+                            // examine only `.first()` when the cond is
+                            // nondeterministic). `Demand::All` makes the parallel
+                            // path agree with the (correct, deterministic)
+                            // single-threaded path. No correctness-preserving perf
+                            // cost: a deterministic condition yields exactly one
+                            // result under `Demand::All` too, so the full evaluation
+                            // is forced only when correctness genuinely requires the
+                            // fan-out. The `expected_type` Bool prune is a separate
+                            // field and is unaffected.
                             work_stack.push(WorkItem::Eval {
                                 value: condition,
                                 env,
@@ -6125,7 +6151,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 is_tail_call: false,
                                 expected_type: Some(ctx.factory().atom("Bool")),
                                 demand: Some(
-                                    crate::backend::eval::cesk::coroutine::Demand::Exactly(1),
+                                    crate::backend::eval::cesk::coroutine::Demand::All,
                                 ),
                                 carrying_bindings: carrying_bindings.clone(),
                             });
@@ -7927,6 +7953,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 env: env.clone(),
                                 depth,
                                 start_epoch: mutation_epoch(),
+                                start_space_epoch: space_mutation_epoch(),
                             });
                         }
                     }
@@ -8190,13 +8217,21 @@ fn eval_trampoline_inner<C: EvalContext>(
                             outer_demand,
                         });
 
+                        // Bug #309/#266 fix (2026-06-16): `Demand::All`, not
+                        // `Exactly(1)` — see the detailed rationale at the sibling
+                        // `EvalIfCondition` dispatch (~line 6118). `if` fans out
+                        // across every nondeterministic condition result, so a
+                        // bounded demand made the parallel fan-out cardinality
+                        // timing-dependent (silent subset drops + RSS-runaway OOM).
+                        // This is the deferred-bindings (`EvalWithBindings`) path of
+                        // the same `if` form.
                         work_stack.push(WorkItem::Eval {
                             value: condition,
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
                             expected_type: Some(ctx.factory().atom("Bool")),
-                            demand: Some(crate::backend::eval::cesk::coroutine::Demand::Exactly(1)),
+                            demand: Some(crate::backend::eval::cesk::coroutine::Demand::All),
                             carrying_bindings: carrying_bindings.clone(),
                         });
                         continue;
@@ -17872,6 +17907,7 @@ fn process_continuation<C: EvalContext>(
         Continuation::MemoizeResult {
             expr_hash,
             mutation_epoch: saved_epoch,
+            start_space_epoch: saved_space_epoch,
             env: _,
             depth: _,
         } => {
@@ -17889,7 +17925,7 @@ fn process_continuation<C: EvalContext>(
             // result depends on that context (binding projection). Without the
             // namespace, a bare `(reduce X)` (no collapse-bind) poisoned a
             // later `(collapse (reduce X))` — PLN's `?` macro double-reduce.
-            if mutation_epoch() == saved_epoch {
+            if mutation_epoch() == saved_epoch && space_mutation_epoch() == saved_space_epoch {
                 eval_memo_put(
                     expr_hash,
                     current_memo_tracked_key(),
@@ -18283,6 +18319,7 @@ fn process_continuation<C: EvalContext>(
             env: _,
             depth: _depth,
             start_epoch,
+            start_space_epoch,
         } => {
             let (result_values, result_env) = result;
 
@@ -18300,7 +18337,12 @@ fn process_continuation<C: EvalContext>(
             // (per-`!` watermark). Sibling-branch hits are prevented by
             // is_scope_visible, so re-tagging with the retrieving
             // branch's carrying_bindings is safe.
-            if start_epoch == mutation_epoch() {
+            if start_epoch == mutation_epoch() && start_space_epoch == space_mutation_epoch() {
+                // #309/#266 torn-read guard: ALSO require the process-global
+                // space epoch to be unchanged — a sibling worker's `add-atom` to
+                // the shared space during this subgoal's derivation (invisible to
+                // the thread-local `start_epoch`) makes the result a torn read of
+                // a changing space; tabling it would serve a subset/stale answer.
                 // Values-only cache contract (intentional discard of `_b`):
                 // the cache stores results independent of caller context.
                 // On cache hit (line ~2193), consumers re-tag with THEIR OWN
@@ -18353,6 +18395,7 @@ fn process_continuation<C: EvalContext>(
             env: _,
             depth: _,
             start_epoch,
+            start_space_epoch,
         } => {
             let (result_values, result_env) = result;
 
@@ -18363,7 +18406,10 @@ fn process_continuation<C: EvalContext>(
             // the caller's carrying_bindings is reconstituted at cache hit
             // (line ~3977) via bv_with(v, cb.clone()). Storing bindings here
             // would leak cross-caller within the same query.
-            if start_epoch == mutation_epoch() {
+            if start_epoch == mutation_epoch() && start_space_epoch == space_mutation_epoch() {
+                // #309/#266 torn-read guard (see CompleteSubgoal): don't memoize
+                // a thunk whose derivation spanned a sibling worker's shared-space
+                // mutation.
                 let cached: smallvec::SmallVec<[MettaValue; 2]> =
                     result_values.iter().map(|(v, _)| v.clone()).collect();
                 crate::backend::eval::cesk::with_thunk_table(|t| {

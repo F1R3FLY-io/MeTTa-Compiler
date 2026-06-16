@@ -58,6 +58,17 @@ fn invalidate_space_mutation_caches() {
     crate::backend::eval::trampoline::invalidate_normal_form_memo();
     crate::backend::eval::trampoline::clear_eval_memo();
     crate::backend::eval::trampoline::clear_match_result_cache();
+    // #309/#266: bump the PROCESS-GLOBAL space-mutation epoch. The three clears
+    // above are THREAD-LOCAL — they only reach the mutating worker's caches. But
+    // `fork_for_nondeterminism` Arc-clones the atom-space, so parallel branches
+    // share it: a sibling worker's `EVAL_MEMO`/`SubgoalTable` entries (which gate
+    // on the thread-local `mutation_epoch`) would keep serving a stale
+    // negative/empty result for a query that the just-added fact now satisfies,
+    // silently dropping whole derived layers under contention. The global epoch,
+    // compared on every `EVAL_MEMO`/`SubgoalTable` lookup, invalidates those
+    // cross-thread. (CoW callers also reach here; the extra global bump there is
+    // a harmless over-invalidation, never a correctness risk.)
+    crate::backend::eval::trampoline::dispatch_hints::bump_space_mutation_epoch();
 }
 
 /// Recursively strip all `Lazy(...)` wrappers from a value, peeling through

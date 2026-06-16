@@ -1668,6 +1668,11 @@ pub enum Continuation {
         /// If the epoch has advanced by the time evaluation completes,
         /// the result must not be cached (a side effect occurred transitively).
         mutation_epoch: u64,
+        /// #309/#266: process-global space-mutation epoch when pushed. If a
+        /// SIBLING worker mutated the SHARED atom-space during evaluation (which
+        /// the thread-local `mutation_epoch` above cannot observe), the result is
+        /// a torn read of a changing space and must NOT be cached.
+        start_space_epoch: u64,
         /// Environment (for result forwarding)
         env: SharedEnv,
         /// Evaluation depth
@@ -1746,6 +1751,12 @@ pub enum Continuation {
         /// If the epoch changed during evaluation, the result is impure and
         /// must NOT be cached (it would suppress re-execution of side effects).
         start_epoch: u64,
+        /// #309/#266: process-global space-mutation epoch when evaluation
+        /// started. If a SIBLING worker mutated the shared atom-space during this
+        /// subgoal's evaluation — invisible to the thread-local `start_epoch` —
+        /// the tabled result is a torn read (it scanned a space that changed
+        /// mid-derivation) and must NOT be cached.
+        start_space_epoch: u64,
     },
 
     /// I-6: Complete a thunk after evaluation finishes.
@@ -1759,6 +1770,10 @@ pub enum Continuation {
         depth: usize,
         /// Mutation epoch when evaluation started.
         start_epoch: u64,
+        /// #309/#266: process-global space-mutation epoch when evaluation
+        /// started (see `CompleteSubgoal::start_space_epoch`). Guards against a
+        /// torn read of the shared atom-space by a sibling worker.
+        start_space_epoch: u64,
     },
 
     /// Collecting evaluated arguments for `freeze-tuple`. After all args

@@ -93,20 +93,21 @@ pub struct AllocRegion {
 /// Parameterized allocation interface for the SECK machine.
 ///
 /// The Store trait abstracts over the allocation strategy, enabling:
-/// - Production use: `SlabStore` wrapping `GcFactory` (current behavior)
+/// - Production use: `IndexHeapStore` over the global index heap
 /// - Testing: mock stores for deterministic GC testing
 /// - Analysis: abstract stores for AAM-based static analysis (Phase 4)
 ///
 /// ## Lifetime Parameter
 ///
 /// The Store produces values of type `V: MettaValueTrait`. In production,
-/// `V = MettaValue` with `'static` lifetime (slab-allocated). Abstract
+/// `V = MettaValue` with `'static` lifetime (arena-allocated). Abstract
 /// stores may produce `AbstractValue` with abstract addresses.
 ///
 /// ## Thread Safety
 ///
 /// Implementations must be `Send + Sync` to support parallel evaluation.
-/// The production `SlabStore` delegates to the lock-free `SlabAllocator`.
+/// The production `IndexHeapStore` delegates to the global index heap (backed
+/// by the lock-free `SlabAllocator` value-page substrate).
 pub trait Store<V: MettaValueTrait>: Debug + Send + Sync {
     /// The factory type used to construct values.
     type Factory: MettaValueFactory<V> + Copy + Clone;
@@ -121,7 +122,7 @@ pub trait Store<V: MettaValueTrait>: Debug + Send + Sync {
     ///
     /// # Current Behavior
     ///
-    /// `SlabStore` ignores the hint and delegates to `GcFactory`. Future
+    /// `IndexHeapStore` ignores the hint and delegates to its factory. Future
     /// phases will route based on hints (region-based, nursery, etc.).
     #[inline]
     fn alloc_atom(&self, s: &str, _hint: AllocHint) -> V {

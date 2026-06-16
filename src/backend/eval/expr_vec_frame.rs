@@ -21,17 +21,16 @@
 //! `extend_from_slice` is byte-identical to `frame_chain::collect_vec_roots`
 //! (k_spine unit tests + the A4.x corpus machine-equivalence oracle). The
 //! `FrameLabel` is used only by the slab arm (the index `ExprVec` needs no
-//! label); it lives in [`super::frame_label`] so this signature stays stable
-//! after A5.6 walls `frame_chain` to the slab build.
+//! label); it lives in [`super::frame_label`] so this signature stayed stable
+//! after A5.6 routed root discovery off the (now-deleted) `frame_chain`.
 //!
-//! ## Why compile-time `#[cfg]`, not runtime `gc_mode_is_index()`
+//! ## Why this is unconditional, not a runtime `gc_mode_is_index()` gate
 //!
-//! This replaces the runtime `gc_mode_is_index()` gate inside `maybe_push_frame`
-//! with a COMPILE-TIME `#[cfg(feature = "index-gc")]` split. Sound because:
-//! runtime `--gc` / `MTT_GC` requests are assertions rather than mode switches,
-//! and under `feature = "index-gc"` the value factory is the compile-time
-//! `IndexFactory` — so the slab `frame_chain` path is statically unreachable in
-//! the index build.
+//! This replaced the runtime `gc_mode_is_index()` gate inside `maybe_push_frame`
+//! with a compile-time split, and F4 then deleted the slab arm entirely. Sound
+//! because: runtime `--gc` / `MTT_GC` requests are assertions rather than mode
+//! switches, and the value factory is the compile-time `IndexFactory` — so the
+//! old slab `frame_chain` path was statically unreachable and is now gone.
 //!
 //! A5.0 adds this helper but does not yet wire the 11 call sites
 //! (modules.rs ×2 + testing_ops.rs ×9); A5.2 wired those and removed the

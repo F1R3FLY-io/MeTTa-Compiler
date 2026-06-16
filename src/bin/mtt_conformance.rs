@@ -184,8 +184,7 @@ fn run_fixture(metta_path: &Path, yaml_path: &Path) -> Result<FixtureOutcome, St
         // Register them as temporary roots so the single-threaded index
         // collector (which fires at each `eval_with_tier` quiescence point) does
         // not reclaim them. The handle refreshes each iteration and drops at
-        // loop end. No-op cost in the slab build. See
-        // docs/cesk-gc/single-threaded-collector.md.
+        // loop end. See docs/cesk-gc/single-threaded-collector.md.
         let _accum_roots = mettatron::backend::models::register_temporary_roots(all.clone());
         let outcome = eval_with_tier(
             expr,

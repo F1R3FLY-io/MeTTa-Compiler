@@ -17,8 +17,8 @@
 //! call-volume reduction instead. Both prior projection methods (Ir
 //! share, cycle counts) each missed badly once — this measures.
 //!
-//! Run (index build only):
-//!   cargo build --release --features index-gc --bin mtt-hitpath-bench
+//! Run:
+//!   cargo build --release --bin mtt-hitpath-bench
 //!   taskset -c 8 ./target/release/mtt-hitpath-bench
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("parallel") {

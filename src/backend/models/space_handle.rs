@@ -1036,7 +1036,7 @@ impl SpaceHandle {
 
     /// Deserialize bytes to MettaValue using the built-in deserializer.
     fn deserialize_to_metta(&self, bytes: &[u8]) -> MettaValue {
-        // Inc 4: deserialize into the ACTIVE store (index σ under --features index-gc).
+        // Inc 4: deserialize into the ACTIVE store (the index σ).
         let factory = super::active_factory();
         match factory.deserialize(bytes) {
             Ok((value, _)) => value,

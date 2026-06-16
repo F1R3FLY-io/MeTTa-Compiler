@@ -349,7 +349,7 @@ mod tests {
     /// safepoint with the discovered-root gap sources populated: the recursion +
     /// rule dispatch fill the EVAL_MEMO / MATCH_RESULT / subgoal / thunk caches,
     /// and `amb` forks the search (exercising the deferred-env path). Under
-    /// `--features index-gc` + `debug_assertions` the in-safepoint oracle
+    /// `debug_assertions` the in-safepoint oracle
     /// (eval_loop.rs) asserts `collect_machine_roots` ⊇ the discovered root set on
     /// EVERY safepoint hit; reaching the end without panicking == the structural
     /// reader stayed a superset across the whole run. This keeps the reader honest

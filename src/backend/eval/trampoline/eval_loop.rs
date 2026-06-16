@@ -2727,9 +2727,8 @@ fn parallel_dispatch(
                     // notify, NO park), then return normally; the parent's
                     // `WaitForParallel` K-frame roots the result thereafter.
                     //
-                    // SLAB-BYTE-IDENTICAL: the block is behind the
-                    // `#[cfg(feature = "index-gc")]` wall, and the runtime arm first
-                    // checks `dedicated_gc_enabled()`, which follows index mode.
+                    // The block first checks `dedicated_gc_enabled()`, so it is a
+                    // no-op unless the dedicated collector is on.
                     {
                         if crate::backend::models::gc_allocator::dedicated_gc_enabled()
                             && crate::backend::models::gc_allocator::is_gc_requested()
@@ -4471,18 +4470,18 @@ fn eval_trampoline_inner<C: EvalContext>(
             // Runs regardless of `ctx.should_safepoint()` — see top-of-block
             // comment. Without this, parallel-branch workers grow their
             // per-thread nurseries unboundedly.
-            // B1 (Phase B quick win): the slab nursery reclaims NOTHING in index
-            // mode — `NurseryState::collect` delegates all slot freeing to the main
-            // GC (incremental_gc.rs:473), which under `--features index-gc` is the
-            // store-centric collector, not the slab. So in index mode this block is
-            // pure wasted work: the live-pointer materialization + sort the profiler
-            // flags (~5.64% on FlyingRaven, slab path) over index-derived keys that
-            // free nothing. Gate it off in index mode. Byte-identical in slab mode
-            // (gate true → runs exactly as before); in index mode the nursery frees
-            // nothing either way, so skipping it leaves the live set — and therefore
-            // every observable result — unchanged. (The crux-steps-2-6 design called
-            // for `should_collect()==false` in index mode; the call-site gate is the
-            // cleaner realization — it also avoids the lazy nursery init.)
+            // B1 (Phase B quick win): the slab nursery reclaims NOTHING in the index
+            // store — `NurseryState::collect` delegates all slot freeing to the main
+            // GC (incremental_gc.rs:473), which is the store-centric collector, not
+            // the slab. So this block would be pure wasted work: the live-pointer
+            // materialization + sort the profiler flagged (~5.64% on FlyingRaven on
+            // the old slab path) over index-derived keys that free nothing. The
+            // `!gc_mode_is_index()` gate (always false since the slab store was
+            // removed) skips it; the nursery frees nothing either way, so skipping
+            // leaves the live set — and every observable result — unchanged. (The
+            // crux-steps-2-6 design called for `should_collect()==false`; the
+            // call-site gate is the cleaner realization — it also avoids the lazy
+            // nursery init.)
             if !crate::backend::models::metta_value::gc_mode_is_index() {
                 crate::backend::eval::cesk::with_nursery_collector(|collector| {
                     if collector.should_collect() {

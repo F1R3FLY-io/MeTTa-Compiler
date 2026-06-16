@@ -63,9 +63,9 @@ pub struct SessionContext<'s> {
     /// Reference to the MettaState coordinating GC
     state: &'s MettaState,
 
-    /// Store seam (Inc 0/4): `ActiveStore` (= `SlabStore` today) wraps the
-    /// global `GcFactory` (no behavior change); the Inc-4 flip re-points the
-    /// `ActiveStore` alias in `models/mod.rs` to `IndexHeapStore`.
+    /// Store seam (Inc 0/4): `ActiveStore` (= `IndexHeapStore`) wraps the
+    /// global index heap. (`ActiveStore` is the alias in `models/mod.rs`; the
+    /// Inc-4 flip re-pointed it from the deleted slab store to `IndexHeapStore`.)
     store: ActiveStore,
 
     /// Alloc count at the last safepoint check.
@@ -119,26 +119,6 @@ impl<'s> SessionContext<'s> {
         self
     }
 
-    /// Get the factory for intermediate (eval) allocations.
-    ///
-    /// Returns the same `GcFactory` used for all allocations. This method
-    /// exists for backward compatibility with code that distinguished between
-    /// eval and storage factories.
-    ///
-    /// Inc-4 coupling: this returns the concrete `GcFactory` via the
-    /// slab-specific `ActiveStore::gc_factory()` inherent method, which does
-    /// NOT exist on `IndexHeapStore`. These accessors have no production callers
-    /// (pure backward-compat shims), so under `--features index-gc` — where
-    /// `ActiveStore = IndexHeapStore` lacks `gc_factory()` — they are compiled
-    /// out entirely rather than ported to the index store.
-    /// Get the factory for persistent (storage) allocations.
-    ///
-    /// Returns the same `GcFactory` used for all allocations. This method
-    /// exists for backward compatibility with code that distinguished between
-    /// eval and storage factories.
-    ///
-    /// Inc-4 coupling: see [`SessionContext::eval_factory`] — slab-specific
-    /// `gc_factory()` accessor; compiled out under `--features index-gc`.
     /// Get reference to the MettaState.
     #[inline]
     pub fn state(&self) -> &'s MettaState {

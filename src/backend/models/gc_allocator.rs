@@ -3939,8 +3939,8 @@ pub(crate) fn worker_resume_wait_for_cycle(my_gen: u64) {
 // atomics); written only on the index collector's wait paths.
 pub(crate) static GC_GATE_WAITERS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static GC_PARK_WAITERS: AtomicUsize = AtomicUsize::new(0);
-// STRADDLE's only writer is the `#[cfg(feature = "index-gc")]` straddle loop in
-// `reacquire_eval_guard_after_safepoint_full`, and its only reader is the index-gc
+// STRADDLE's only writer is the straddle loop in
+// `reacquire_eval_guard_after_safepoint_full`, and its only reader is the index
 // dump accessor — so it is index-gc-only (GATE/PARK are referenced by the
 // always-compiled, slab-dead `worker_wait_for_resume`/`worker_resume_wait_for_cycle`).
 pub(crate) static GC_STRADDLE_WAITERS: AtomicUsize = AtomicUsize::new(0);
@@ -7533,11 +7533,10 @@ unsafe impl Sync for GcFactory {}
 
 impl Default for GcFactory {
     fn default() -> Self {
-        // Construct the concrete slab factory directly. `global_factory()` is now
-        // feature-polymorphic (returns `ActiveFactory`, i.e. `IndexFactory` under
-        // `--features index-gc`), so it can no longer satisfy this concrete
-        // `GcFactory` return type. In the default build this is byte-identical to
-        // the previous `global_factory()` body (`GcFactory::new(global_allocator())`).
+        // Construct the concrete `GcFactory` directly. `global_factory()` returns
+        // `ActiveFactory` (= `IndexFactory`), which cannot satisfy this concrete
+        // `GcFactory` return type, so this calls `GcFactory::new(global_allocator())`
+        // directly.
         GcFactory::new(global_allocator())
     }
 }

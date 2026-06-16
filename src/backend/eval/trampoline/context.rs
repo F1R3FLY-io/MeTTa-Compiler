@@ -15,11 +15,9 @@ use std::cell::{Cell, RefCell};
 
 use crate::backend::environment::GenericEnvironment;
 // Inc 0 (Store seam): production contexts hold a `Store` instead of a bare
-// `GcFactory`. `ActiveStore` (currently `SlabStore`) wraps the global
-// `ActiveFactory` (= `GcFactory`, no behavior change); Inc 4 flips the
-// `ActiveFactory`/`ActiveStore` aliases (in `models/mod.rs`) to the
-// index arena at one place. The `Store` trait is still imported for its
-// `factory()` accessor used by the `EvalContext` impls below.
+// factory. `ActiveStore` (= `IndexHeapStore`) wraps the global index heap via
+// `ActiveFactory` (= `IndexFactory`). The `Store` trait is still imported for
+// its `factory()` accessor used by the `EvalContext` impls below.
 use crate::backend::eval::cesk::store::Store;
 use crate::backend::models::{
     active_factory, alloc_count_snapshot, register_temporary_roots, request_gc, ActiveFactory,

@@ -8507,7 +8507,7 @@ fn test_trail_mark_undo_new_binding() {
 // ── A5.1 index-build siblings: the same nested-VM rooting guarantees, but via
 // the typed K-spine (`VmLeaf::Vm` -> `collect_k_spine`), which is the index
 // collector's structural root source. `with_vm_roots_frame` returns a
-// `VmLeafGuard` under `--features index-gc`. ─────────────────────────────────
+// `VmLeafGuard`. ──────────────────────────────────────────────────────────────
 
 /// Index sibling of `vm_frame_under_trampoline_contributes_roots`.
 #[test]

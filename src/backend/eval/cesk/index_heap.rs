@@ -1673,9 +1673,9 @@ pub fn global_index_heap() -> &'static RwLock<IndexHeap> {
 
 // ============================================================================
 // IndexFactory + IndexHeapStore — the `Store` seam's index-arena implementation
-// (Inc 2a-4). A ZST factory reaching the global heap; mirrors `GcFactory`/
-// `SlabStore`. Returns `MettaValue` handles whose payload is an arena `Addr`
-// (decoded once the value model is mode-aware — Inc 2a-5).
+// (Inc 2a-4). A ZST factory reaching the global heap; mirrors the `GcFactory`/
+// `SlabStore` design it replaced. Returns `MettaValue` handles whose payload is
+// an arena `Addr` (decoded once the value model is mode-aware — Inc 2a-5).
 // ============================================================================
 
 /// Zero-sized value factory backed by the global index heap.
@@ -1922,7 +1922,8 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
 }
 
 /// Production `Store` over the global index heap (the `--gc=index` substrate).
-/// Selected at the `EvalContext::factory()` seam in Inc 4; default stays `SlabStore`.
+/// Selected at the `EvalContext::factory()` seam; the only `Store` impl since
+/// the slab store was removed (F4 R8).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct IndexHeapStore {
     factory: IndexFactory,

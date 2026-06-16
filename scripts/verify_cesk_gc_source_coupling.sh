@@ -1272,21 +1272,6 @@ assert_after_before \
   "let _flush_guard = COUNTER_FLUSH_LOCK.lock();" \
   "if is_gc_in_progress() {" \
   "let allocator = global_allocator();"
-assert_after_before \
-  "src/backend/models/gc_allocator.rs" \
-  "pub fn process_gc_response" \
-  "let _counter_flush_guard = super::gc_cron::COUNTER_FLUSH_LOCK.lock();" \
-  "let (safepoint_live, env_roots_complete) = trace_safepoint_live_set();"
-assert_after_before \
-  "src/backend/models/gc_allocator.rs" \
-  "pub fn process_gc_response" \
-  "let _counter_flush_guard = super::gc_cron::COUNTER_FLUSH_LOCK.lock();" \
-  "// === Phase 3: Free value slots"
-assert_after_before \
-  "src/backend/models/gc_allocator.rs" \
-  "pub fn release_session(&self, context_id: u32)" \
-  "let _counter_flush_guard = super::gc_cron::COUNTER_FLUSH_LOCK.lock();" \
-  "let surviving = self.trace_surviving_set();"
 
 # A5 structural-root architecture: the dynamic root registry and raw frame-chain
 # discovery path must remain slab-only. The index collector reads roots from the

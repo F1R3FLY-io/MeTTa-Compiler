@@ -932,6 +932,33 @@ pub(crate) static INLINE_NOT_REDUCIBLE_INNER: MettaValueInner = MettaValueInner:
 static INLINE_TRUE_INNER: MettaValueInner = MettaValueInner::Bool(true);
 static INLINE_FALSE_INNER: MettaValueInner = MettaValueInner::Bool(false);
 
+/// Intern table for inline-`Long` `MettaValueInner`s (used by `inner_ref_inline`'s
+/// `NB_TAG_LONG` arm). `inner_ref()`/`inner()` must hand back a `&'static
+/// MettaValueInner`, but inline NaN-boxed `Long`s have no compile-time singleton
+/// (one per value would be infinite). Interning materializes each distinct `n` at
+/// most ONCE — an append-only `&'static`, the same discipline as the string
+/// interner — instead of leaking a fresh slab slot on every accessor call (the
+/// prior unbounded leak). Safe to share the pointer: inline values report
+/// `inner_ptr() == null`, so no caller uses it as an identity/hash key.
+fn intern_long_inner(n: i64) -> &'static MettaValueInner {
+    static LONG_INNER_INTERN: std::sync::OnceLock<
+        parking_lot::RwLock<HashMap<i64, &'static MettaValueInner>>,
+    > = std::sync::OnceLock::new();
+    let table = LONG_INNER_INTERN.get_or_init(|| parking_lot::RwLock::new(HashMap::new()));
+    if let Some(&inner) = table.read().get(&n) {
+        return inner;
+    }
+    // Not present — materialize once under the write lock (double-checked: a
+    // concurrent thread may have inserted between the read drop and the write).
+    let mut writer = table.write();
+    if let Some(&inner) = writer.get(&n) {
+        return inner;
+    }
+    let inner = super::gc_allocator::global_allocator().alloc_value(MettaValueInner::Long(n));
+    writer.insert(n, inner);
+    inner
+}
+
 #[inline]
 pub(crate) fn is_inline_singleton_inner_ptr(ptr: *const MettaValueInner) -> bool {
     std::ptr::eq(ptr, &INLINE_UNIT_INNER)
@@ -1165,10 +1192,10 @@ impl MettaValue {
             NB_TAG_UNIT => &INLINE_UNIT_INNER,
             NB_TAG_EMPTY => &INLINE_EMPTY_INNER,
             NB_TAG_LONG => {
-                // Slow path: materialize in slab. Callers should use view()/as_long().
-                let n = self.inline_long_value();
-                let alloc = super::gc_allocator::global_allocator();
-                alloc.alloc_value(MettaValueInner::Long(n))
+                // Slow path (callers should prefer `view()`/`as_long()`): return an
+                // INTERNED `&'static MettaValueInner::Long(n)` — one per distinct value,
+                // reused forever — rather than leaking a fresh slab slot on every call.
+                intern_long_inner(self.inline_long_value())
             }
             _ => {
                 // Unknown inline tag — should not happen

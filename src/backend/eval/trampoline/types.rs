@@ -284,21 +284,22 @@ impl std::fmt::Debug for ParallelDispatchHandle {
 
 /// GC root provider for an active parallel-dispatch.
 ///
-/// Holds only the Send+Sync portion of `ParallelDispatchHandle` (the
-/// `results` Mutex). Registered with the global `ROOT_REGISTRY` at
-/// dispatch creation; kept alive by `WaitForParallel._root_provider`
-/// for the dispatch's lifetime.
+/// Holds only the `Send + Sync` portion of `ParallelDispatchHandle` — the
+/// immutable `branches` input snapshot and the `results` Mutex. Registered
+/// as an `Arc<dyn DispatchRoots>` in the global `LIVE_DISPATCHES` anchor at
+/// dispatch creation; kept alive by
+/// `ParallelDispatchHandle._dispatch_roots_arc` for the dispatch's lifetime.
 ///
-/// **Why a separate struct instead of `impl RootProvider for
-/// ParallelDispatchHandle`**: `ParallelDispatchHandle` contains
-/// `_root_guard: EvalFrameGuard`, which is `!Sync` because it holds a
-/// raw pointer into the thread-local frame_chain that MUST be popped on
-/// the same thread that pushed it. Making the handle `Send + Sync` and
-/// wrapping it in `Arc` would let the GC pool worker (different thread)
-/// hold the last strong reference and run `Drop` cross-thread → wrong
-/// frame_chain popped → memory corruption. Separating the GC-visible
-/// data (`results` Arc — already Sync) keeps thread-bound state on the
-/// trampoline thread while still exposing roots to mark-sweep.
+/// **Why a separate struct instead of `impl DispatchRoots for
+/// ParallelDispatchHandle`**: the handle carries thread-bound state driven
+/// only on the trampoline thread (the `WaitForParallel` pump fields). The
+/// anchored provider must be `Send + Sync` so the dedicated GC thread can
+/// hold a `Weak` to it and upgrade-and-walk it concurrently; registering the
+/// whole handle would force that bound onto the handle and could let the GC
+/// thread win the last strong reference and run `Drop` cross-thread.
+/// Separating the GC-visible data — the `branches` Arc and the `results`
+/// Mutex, both already `Sync` — keeps thread-bound state on the trampoline
+/// thread while still exposing roots to the collector.
 ///
 /// **Why `try_lock` (not `lock`)**: if a worker holds `results` while
 /// writing, the worker is by construction holding its `EvalGuard`, so
@@ -307,12 +308,11 @@ impl std::fmt::Debug for ParallelDispatchHandle {
 /// the worker's `EvalGuard` already inhibits the collection that would
 /// otherwise observe a stale snapshot.
 #[derive(Debug)]
-// A5.3: the index-gc build cfg-walls the `RootProvider` impl (it registers ZERO
-// providers — roots are structural), so these fields are read only in the slab
-// build. The struct is still constructed and held alive via the dispatch handle's
-// `_dispatch_roots_arc` field (byte-identical construction in both builds), so it is
-// intentionally dead-but-present in the index regime.
-#[allow(dead_code)]
+// The `DispatchRoots` impl below is live in this build: the dedicated GC thread
+// walks every registered provider through `LIVE_DISPATCHES` (see that impl's
+// doc) and calls `collect_dispatch_roots`, so `branches` and `results` are live
+// reads. The struct is kept alive for the dispatch's lifetime by the dispatch
+// handle's `_dispatch_roots_arc` field, whose `Weak` the anchor walk upgrades.
 pub struct ParallelDispatchRoots {
     pub(crate) results: super::eval_loop::ParallelEvalResults,
     /// Stable snapshot of worker INPUTS for the dispatch lifetime.
@@ -412,11 +412,11 @@ impl std::fmt::Debug for ParallelCollapseDispatchHandle {
 
 /// GC root provider for an active parallel-collapse dispatch. See
 /// `ParallelDispatchRoots` for the design rationale (the same
-/// reasoning applies — collapse handles also carry `EvalFrameGuard`).
+/// reasoning applies to the collapse fan-out).
 #[derive(Debug)]
-// A5.3: see `ParallelDispatchRoots` — the `RootProvider` impl is slab-only;
-// the struct stays alive via `ParallelCollapseDispatchHandle::_dispatch_roots_arc`.
-#[allow(dead_code)]
+// See `ParallelDispatchRoots`: the `DispatchRoots` impl below is live in this
+// build (walked via `LIVE_DISPATCHES`); the struct stays alive via
+// `ParallelCollapseDispatchHandle::_dispatch_roots_arc`.
 pub struct ParallelCollapseRoots {
     pub(crate) results: super::eval_loop::ParallelEvalResults,
     /// Stable snapshot of worker INPUTS for the dispatch lifetime.

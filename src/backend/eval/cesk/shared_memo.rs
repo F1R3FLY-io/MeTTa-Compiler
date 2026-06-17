@@ -334,6 +334,20 @@ pub enum MemoChannel {
     Subgoal,
 }
 
+/// Outcome of [`SharedMemoStore::lookup_or_claim`] — the Step-4 protocol decision
+/// (matches `tla/SharedMemoAwaitNoDeadlock.tla`). The caller acts on it:
+/// `Read`/`AwaitedRead` → use the bag; `Claimed` → derive then `publish_*`;
+/// `Cut` → contribute the fixpoint EMPTY; `LocalEval` → derive on this thread
+/// WITHOUT touching the store (the always-safe, never-blocking, never-over-cut
+/// fallback for a would-deadlock shared dependency, a stale/errored entry).
+pub enum MemoLookup {
+    Read(SmallVec<[MettaValue; 2]>),
+    AwaitedRead(SmallVec<[MettaValue; 2]>),
+    Claimed,
+    Cut,
+    LocalEval,
+}
+
 /// The process-wide shared memo store: cross-thread memoization for the thunk and
 /// subgoal channels plus the wait-for graph that keeps awaits deadlock-free.
 pub struct SharedMemoStore {
@@ -383,6 +397,90 @@ impl SharedMemoStore {
     /// Number of live entries in a channel (diagnostics / tests).
     pub fn len(&self, channel: MemoChannel) -> usize {
         self.map(channel).len()
+    }
+
+    /// The Step-4 cross-thread memo protocol (formally verified deadlock-free +
+    /// over-cut-free by `tla/SharedMemoAwaitNoDeadlock.tla`). `my_id` is the
+    /// caller's derivation id ([`current_derivation_id`]); `space_epoch` the
+    /// current `space_mutation_epoch`. See [`MemoLookup`] for how to act on each
+    /// outcome.
+    pub fn lookup_or_claim(
+        &self,
+        channel: MemoChannel,
+        hash: u64,
+        my_id: u64,
+        space_epoch: u64,
+    ) -> MemoLookup {
+        let e = self.entry(channel, hash);
+        loop {
+            match e.state() {
+                memo_state::DONE => {
+                    if e.space_epoch() == space_epoch {
+                        if let Some(r) = e.read_done() {
+                            return MemoLookup::Read(r);
+                        }
+                    }
+                    // Stale w.r.t. a sibling add-atom (or transiently unreadable):
+                    // re-derive locally rather than trust a stale bag.
+                    return MemoLookup::LocalEval;
+                }
+                memo_state::ERROR => return MemoLookup::LocalEval,
+                memo_state::EMPTY => {
+                    if e.try_claim(my_id, space_epoch) {
+                        return MemoLookup::Claimed;
+                    }
+                    // Lost the claim race — re-observe (now INFLIGHT/DONE/ERROR).
+                    continue;
+                }
+                memo_state::INFLIGHT => {
+                    let owner = e.owner();
+                    if owner == my_id {
+                        // Same-derivation re-entry — the genuine self-cycle the
+                        // thread-local Blackhole used to catch.
+                        return MemoLookup::Cut;
+                    }
+                    if self.waitfor.try_add_edge(my_id, owner) {
+                        // Awaiting cannot deadlock (the edge did not close a cycle):
+                        // park until the owner finishes, then read.
+                        let terminal = e.await_terminal();
+                        self.waitfor.remove_edge(my_id, owner);
+                        if terminal == memo_state::DONE && e.space_epoch() == space_epoch {
+                            if let Some(r) = e.read_done() {
+                                return MemoLookup::AwaitedRead(r);
+                            }
+                        }
+                        // Owner errored or the result went stale — derive locally.
+                        return MemoLookup::LocalEval;
+                    }
+                    // Awaiting WOULD deadlock. Cut iff the owner is a genuine
+                    // ancestor (a real cross-thread fixpoint cycle); otherwise it
+                    // is a shared in-flight dependency the blocked parent owns —
+                    // never cut it, evaluate it locally.
+                    if is_ancestor(owner, my_id) {
+                        return MemoLookup::Cut;
+                    }
+                    return MemoLookup::LocalEval;
+                }
+                _ => return MemoLookup::LocalEval, // unreachable state byte
+            }
+        }
+    }
+
+    /// Publish a derived result for a hash this caller `Claimed` (INFLIGHT→DONE,
+    /// waking awaiters).
+    pub fn publish_done(
+        &self,
+        channel: MemoChannel,
+        hash: u64,
+        results: SmallVec<[MettaValue; 2]>,
+    ) {
+        self.entry(channel, hash).publish_done(results);
+    }
+
+    /// Mark a claimed hash ERROR (torn read / owner unwound), waking awaiters to
+    /// re-derive locally.
+    pub fn publish_error(&self, channel: MemoChannel, hash: u64) {
+        self.entry(channel, hash).publish_error();
     }
 }
 
@@ -481,5 +579,96 @@ mod tests {
         std::thread::yield_now();
         e.publish_done(SmallVec::new());
         assert_eq!(h.join().expect("await thread"), memo_state::DONE);
+    }
+
+    #[test]
+    fn protocol_claim_then_read() {
+        let s = SharedMemoStore::new();
+        assert!(matches!(
+            s.lookup_or_claim(MemoChannel::Thunk, 1, 10, 0),
+            MemoLookup::Claimed
+        ));
+        s.publish_done(MemoChannel::Thunk, 1, SmallVec::new());
+        assert!(matches!(
+            s.lookup_or_claim(MemoChannel::Thunk, 1, 20, 0),
+            MemoLookup::Read(_)
+        ));
+    }
+
+    #[test]
+    fn protocol_same_derivation_cycle_cuts() {
+        let s = SharedMemoStore::new();
+        assert!(matches!(
+            s.lookup_or_claim(MemoChannel::Thunk, 2, 10, 0),
+            MemoLookup::Claimed
+        ));
+        // The SAME derivation re-enters its own in-flight entry => cut.
+        assert!(matches!(
+            s.lookup_or_claim(MemoChannel::Thunk, 2, 10, 0),
+            MemoLookup::Cut
+        ));
+    }
+
+    #[test]
+    fn protocol_stale_done_local_evals() {
+        let s = SharedMemoStore::new();
+        // Claimed + published at space-epoch 5.
+        assert!(matches!(
+            s.lookup_or_claim(MemoChannel::Thunk, 3, 10, 5),
+            MemoLookup::Claimed
+        ));
+        s.publish_done(MemoChannel::Thunk, 3, SmallVec::new());
+        // A caller at a NEWER epoch sees the stale DONE => local-eval (re-derive).
+        assert!(matches!(
+            s.lookup_or_claim(MemoChannel::Thunk, 3, 20, 7),
+            MemoLookup::LocalEval
+        ));
+    }
+
+    #[test]
+    fn protocol_cross_thread_cycle_cuts() {
+        let s = SharedMemoStore::new();
+        let a = DerivationScope::enter_child(0);
+        let aid = a.id();
+        let b = DerivationScope::enter_child(aid); // B is a child of A
+        let bid = b.id();
+        // A claims hash 4 (in-flight, owner = A).
+        assert!(matches!(
+            s.lookup_or_claim(MemoChannel::Thunk, 4, aid, 0),
+            MemoLookup::Claimed
+        ));
+        // A is parked awaiting B (the collapse-merge block): edge A->B.
+        assert!(s.waitfor().try_add_edge(aid, bid));
+        // B re-enters A's in-flight thunk. Awaiting B->A would close A<->B; A is a
+        // genuine ancestor of B => CUT (a real cross-thread fixpoint cycle).
+        assert!(matches!(
+            s.lookup_or_claim(MemoChannel::Thunk, 4, bid, 0),
+            MemoLookup::Cut
+        ));
+        drop(b);
+        drop(a);
+    }
+
+    #[test]
+    fn protocol_shared_dependency_awaits_then_reads() {
+        let s = Arc::new(SharedMemoStore::new());
+        // Owner derivation 100 claims hash 6.
+        assert!(matches!(
+            s.lookup_or_claim(MemoChannel::Thunk, 6, 100, 0),
+            MemoLookup::Claimed
+        ));
+        // A different, NON-ancestor derivation (200) needs the same hash. With no
+        // wait-for cycle it must AWAIT (a shared dependency), never cut.
+        let s2 = Arc::clone(&s);
+        let h = std::thread::spawn(move || s2.lookup_or_claim(MemoChannel::Thunk, 6, 200, 0));
+        std::thread::yield_now();
+        s.publish_done(MemoChannel::Thunk, 6, SmallVec::new());
+        // The shared dependency must be SERVED, never cut — either it parked then
+        // read (AwaitedRead) or the publish landed first and it read immediately
+        // (Read), depending on the race; both are correct, neither is Cut.
+        assert!(matches!(
+            h.join().expect("await thread"),
+            MemoLookup::AwaitedRead(_) | MemoLookup::Read(_)
+        ));
     }
 }

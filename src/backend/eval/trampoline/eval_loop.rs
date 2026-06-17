@@ -2597,6 +2597,10 @@ fn parallel_dispatch(
     // SEEDED_ACTIVE_SET via `SeedActiveScope` so a cross-thread recursive re-entry
     // cuts to the fixpoint EMPTY. `None` (zero overhead) when no subgoal is active.
     let parent_active_eval = crate::backend::eval::cesk::snapshot_active_hashes();
+    // #309/#266 Step 1 (lineage): capture this thread's derivation id so each
+    // worker enters a child derivation — the ancestor relation the shared store
+    // (later step) uses to distinguish a cross-thread cycle from a shared dep.
+    let parent_derivation_id = crate::backend::eval::cesk::shared_memo::current_derivation_id();
 
     // Spawn ALL branches to the pool — including branch 0 (stack-safety mandate).
     for (slot, (branch_expr, branch_bindings)) in branches.iter().enumerate() {
@@ -2694,6 +2698,12 @@ fn parallel_dispatch(
             // stack as WorkerCaptureScope.
             let _seed_active_scope =
                 crate::backend::eval::cesk::SeedActiveScope::enter(worker_active_eval);
+            // #309/#266 Step 1 (lineage): this worker is a child derivation of the
+            // dispatching thread — records the parent link for the ancestor walk.
+            let _derivation_scope =
+                crate::backend::eval::cesk::shared_memo::DerivationScope::enter_child(
+                    parent_derivation_id,
+                );
             let _demand_scope = DemandScope::enter(demand);
             let _worker_marker = WorkerEvalScope::enter();
             // Cache-root refresh: branch workers evaluate arbitrary rule RHS
@@ -3399,6 +3409,9 @@ fn parallel_collapse_dispatch(
     // #309/#266 root cause #1: snapshot the parent's active-subgoal hashes for
     // seeding each worker (see `parallel_dispatch`).
     let parent_active_eval = crate::backend::eval::cesk::snapshot_active_hashes();
+    // #309/#266 Step 1 (lineage): capture this thread's derivation id for the
+    // child-derivation link (see parallel_dispatch).
+    let parent_derivation_id = crate::backend::eval::cesk::shared_memo::current_derivation_id();
 
     // Spawn ALL items to the pool — NO inline item-0 (stack-safety mandate).
     for (slot, (item_expr, item_bindings)) in items.iter().enumerate() {
@@ -3508,6 +3521,11 @@ fn parallel_collapse_dispatch(
             // the same guard stack.
             let _seed_active_scope =
                 crate::backend::eval::cesk::SeedActiveScope::enter(worker_active_eval);
+            // #309/#266 Step 1 (lineage): child derivation of the dispatching thread.
+            let _derivation_scope =
+                crate::backend::eval::cesk::shared_memo::DerivationScope::enter_child(
+                    parent_derivation_id,
+                );
             let _demand_scope =
                 DemandScope::enter(crate::backend::eval::cesk::coroutine::Demand::All);
             let _worker_marker = WorkerEvalScope::enter();

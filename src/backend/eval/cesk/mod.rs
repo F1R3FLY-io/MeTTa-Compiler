@@ -58,6 +58,7 @@ pub mod reductions;
 pub mod region_alloc;
 pub mod rete_incremental;
 pub mod roots;
+pub mod shared_memo;
 pub mod speculative_match;
 pub mod state;
 pub mod store;

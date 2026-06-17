@@ -1782,6 +1782,14 @@ pub enum Continuation {
         /// started (see `CompleteSubgoal::start_space_epoch`). Guards against a
         /// torn read of the shared atom-space by a sibling worker.
         start_space_epoch: u64,
+        /// #309/#266 (coordination store): `Some(owner)` iff this worker REGISTERED
+        /// as an owner of `thunk_hash` (`MemoLookup::Claimed`) under derivation id
+        /// `owner`, and must release that registration via
+        /// `shared_memo::store().complete(Thunk, thunk_hash, owner)` when this
+        /// fires. `None` for the single-threaded / `LocalEval` paths (nothing
+        /// registered). The id is captured at claim time (not re-read here) so the
+        /// release targets the exact registration even across context.
+        store_owner: Option<u64>,
     },
 
     /// Collecting evaluated arguments for `freeze-tuple`. After all args

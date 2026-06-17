@@ -8012,13 +8012,55 @@ fn eval_trampoline_inner<C: EvalContext>(
                             continue;
                         }
                         _ => {
-                            // Absent or Suspended — push CompleteThunk, proceed normally
+                            // Absent or Suspended — I will derive. #309/#266: consult
+                            // the coordination store (behind `worker_ever_spawned()`,
+                            // so FANOUT=0 is byte-identical) for a CROSS-THREAD cycle.
+                            // A hash in-flight under a PROPER ANCESTOR is a genuine
+                            // cross-thread fixpoint cycle, cut to the fixpoint EMPTY
+                            // like the thread-local Blackhole. A SAME-worker re-entry
+                            // (`LocalEval` because I'm already a registered owner)
+                            // defers to the thread-local Blackhole's own unroll-then-
+                            // cut timing. A non-ancestor sibling REGISTERS me as a new
+                            // owner and derives locally, so MY descendants cut against
+                            // me (bounding the re-derivation fanout — never a runaway).
+                            // On `Claimed` this worker is registered and releases the
+                            // registration in the CompleteThunk handler (on unwind,
+                            // DerivationScope::Drop drops the lineage so a stale owner
+                            // fails OPEN to LocalEval).
+                            let store_owner = if crate::backend::models::gc_allocator::worker_ever_spawned()
+                            {
+                                use crate::backend::eval::cesk::shared_memo as memo;
+                                let me = memo::current_derivation_id();
+                                match memo::store().lookup_or_cut(
+                                    memo::MemoChannel::Thunk,
+                                    thunk_hash,
+                                    me,
+                                ) {
+                                    memo::MemoLookup::Cut => {
+                                        let error_val = ctx.factory().error(
+                                            ctx.factory().string("blackhole"),
+                                            ctx.factory()
+                                                .atom("infinite recursion in EvalWithBindings"),
+                                        );
+                                        work_stack.push(WorkItem::Resume {
+                                            result: (smallvec![bv(error_val)], env),
+                                        });
+                                        continue;
+                                    }
+                                    memo::MemoLookup::Claimed => Some(me),
+                                    memo::MemoLookup::LocalEval => None,
+                                }
+                            } else {
+                                None
+                            };
+                            // Push CompleteThunk, proceed normally.
                             continuations.push(Continuation::CompleteThunk {
                                 thunk_hash,
                                 env: env.clone(),
                                 depth,
                                 start_epoch: mutation_epoch(),
                                 start_space_epoch: space_mutation_epoch(),
+                                store_owner,
                             });
                         }
                     }
@@ -18461,8 +18503,21 @@ fn process_continuation<C: EvalContext>(
             depth: _,
             start_epoch,
             start_space_epoch,
+            store_owner,
         } => {
             let (result_values, result_env) = result;
+
+            // #309/#266 (coordination store): release this worker's owner
+            // registration for `thunk_hash` (if it took one) now the derivation is
+            // complete, so a later derivation of the same hash registers fresh.
+            // Independent of the torn-read memoization guard below.
+            if let Some(owner) = store_owner {
+                crate::backend::eval::cesk::shared_memo::store().complete(
+                    crate::backend::eval::cesk::shared_memo::MemoChannel::Thunk,
+                    thunk_hash,
+                    owner,
+                );
+            }
 
             // Only cache if no mutations occurred during evaluation.
             // Values-only cache contract: thunk hash ALREADY includes the

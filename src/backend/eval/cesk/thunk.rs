@@ -281,6 +281,21 @@ impl<V: MettaValueTrait + Clone + 'static> ThunkTable<V> {
                 ThunkState::Error => ThunkLookup::Error,
             }
         } else {
+            // #309/#266 root cause #1 (THUNK channel): no LOCAL entry, but this
+            // thunk_hash is seeded as actively-evaluating on the forking thread's
+            // lineage (a parent Blackhole captured at fanout, domain-tagged). A
+            // fanned-out worker re-entering the parent's in-flight thunk must CUT
+            // exactly as the parent would inline — NOT insert a fresh Suspended
+            // and re-derive (the runaway). Return Blackhole WITHOUT inserting, so
+            // no stale Suspended is left to falsely cut a later genuine local
+            // re-use. The probe short-circuits on an empty seed (FANOUT=0 /
+            // non-worker path stays byte-identical).
+            if crate::backend::eval::cesk::tabling::is_actively_evaluating(thunk_seed_key(
+                expr_hash,
+            )) {
+                self.total_cycles += 1;
+                return ThunkLookup::Blackhole;
+            }
             self.insert_thunk_with_satb(expr_hash, Thunk::new_suspended());
             ThunkLookup::Absent
         }
@@ -328,6 +343,37 @@ impl<V: MettaValueTrait + Clone + 'static> ThunkTable<V> {
         self.entries
             .get(&expr_hash)
             .map_or(false, |t| t.state == ThunkState::Blackhole)
+    }
+
+    /// #309/#266 root cause #2 (thunk channel): is ANY thunk in blackhole state
+    /// (a `CompleteThunk` derivation in flight on this thread)? Used to skip the
+    /// thunk-table clear on a GC-rendezvous resume mid-thunk-derivation —
+    /// `ACTIVE_EVAL_SET` tracks only subgoals, so the subgoal guard does NOT cover
+    /// the thunk channel; clearing a live blackhole drops the fence that the thunk
+    /// was protecting, dropping an inference layer.
+    #[inline]
+    pub fn has_blackhole(&self) -> bool {
+        self.entries
+            .values()
+            .any(|t| t.state == ThunkState::Blackhole)
+    }
+
+    /// #309/#266 root cause #1 (THUNK channel): push the DOMAIN-TAGGED hashes of
+    /// every Blackhole thunk (a `CompleteThunk` derivation in flight) into `out`
+    /// (dedup'd). These are unioned into `snapshot_active_hashes()` at a parallel
+    /// dispatch so a fanned-out worker inherits them in `SEEDED_ACTIVE_SET` and
+    /// cuts a cross-thread thunk re-entry — the thunk analog of the subgoal seed.
+    /// The `thunk_seed_key` tag keeps these disjoint from subgoal hashes in the
+    /// shared seed set (red-team H1).
+    pub fn push_blackhole_seed_keys(&self, out: &mut SmallVec<[u64; 8]>) {
+        for (&h, thunk) in self.entries.iter() {
+            if thunk.state == ThunkState::Blackhole {
+                let key = thunk_seed_key(h);
+                if !out.contains(&key) {
+                    out.push(key);
+                }
+            }
+        }
     }
 
     /// Return the number of thunks in the table.
@@ -401,6 +447,39 @@ pub fn collect_thunk_roots(out: &mut Vec<MettaValue>) {
             out.extend(thunk.results.iter().cloned());
         }
     });
+}
+
+/// #309/#266 root cause #2 (thunk channel): read-only check (does NOT set
+/// THUNK_DIRTY) for whether THIS thread has an in-flight thunk derivation (a
+/// blackhole entry). The GC-resume clear must skip `clear_thunk_table` while this
+/// holds, independently of the subgoal active set — a blackholed thunk is not in
+/// ACTIVE_EVAL_SET, so the subgoal guard (`active_eval_set_is_empty`) does not
+/// cover it.
+#[inline]
+pub fn thunk_table_has_blackhole() -> bool {
+    THREAD_THUNKS.with(|cell| cell.borrow().has_blackhole())
+}
+
+/// #309/#266 thunk-channel seed domain tag — XORed into a thunk hash to form its
+/// seed key, keeping thunk seed keys disjoint from subgoal hashes in the shared
+/// `SEEDED_ACTIVE_SET` (red-team H1). Applied symmetrically at the producer
+/// (`push_blackhole_seed_keys`) and the consumer (`lookup`'s Absent-path probe).
+/// Value = ASCII "THNKSEED".
+pub(crate) const THUNK_SEED_DOMAIN: u64 = 0x5448_4e4b_5345_4544;
+
+/// Domain-tag a thunk hash into its cross-thread seed key (see [`THUNK_SEED_DOMAIN`]).
+#[inline]
+pub(crate) fn thunk_seed_key(thunk_hash: u64) -> u64 {
+    thunk_hash ^ THUNK_SEED_DOMAIN
+}
+
+/// #309/#266 root cause #1 (THUNK channel): read-only (does NOT set THUNK_DIRTY)
+/// collect of this thread's in-flight thunk Blackhole seed keys, unioned into
+/// `snapshot_active_hashes()` so a fanned-out worker inherits them and cuts a
+/// cross-thread thunk re-entry. Mirrors the subgoal seed for the thunk channel.
+#[inline]
+pub fn collect_blackhole_hashes(out: &mut SmallVec<[u64; 8]>) {
+    THREAD_THUNKS.with(|cell| cell.borrow().push_blackhole_seed_keys(out));
 }
 
 /// Clear the thread-local thunk table.

@@ -331,6 +331,15 @@ pub(crate) fn clear_all_worker_thread_local_caches() {
     // ACTIVE_EVAL_SET is empty, so the pooled-worker hygiene clear still runs.
     if crate::backend::eval::cesk::active_eval_set_is_empty() {
         crate::backend::eval::cesk::tabling::clear_subgoal_table();
+    }
+    // #309/#266 root cause #2 (THUNK channel): the thunk table needs its OWN
+    // guard. A blackholed thunk (a `CompleteThunk` derivation in flight) is NOT
+    // tracked in `ACTIVE_EVAL_SET` (only subgoals are), so the subgoal predicate
+    // above does not protect it — clearing the thunk table mid-blackhole drops the
+    // fence the thunk was holding and a sibling re-use of the same (template,
+    // bindings) misses the memo -> a clean subset of results drops. Gate the thunk
+    // clear on thunk-blackhole-emptiness instead.
+    if !crate::backend::eval::cesk::thunk::thunk_table_has_blackhole() {
         crate::backend::eval::cesk::thunk::clear_thunk_table();
     }
 }

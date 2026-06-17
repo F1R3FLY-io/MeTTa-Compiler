@@ -97,4 +97,6 @@ pub use tabling::{
 pub use thread_local_region::{
     is_thread_region_active, with_thread_local_region, RegionGuard, ThreadLocalRegion,
 };
-pub use thunk::{clear_thunk_table, with_thunk_table, ThunkLookup, ThunkTable};
+pub use thunk::{
+    clear_thunk_table, thunk_table_has_blackhole, with_thunk_table, ThunkLookup, ThunkTable,
+};

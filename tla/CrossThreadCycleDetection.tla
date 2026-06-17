@@ -26,6 +26,17 @@
 (* threaded does). `SeedActiveOnFanout` is the FIX: a fanned-out worker     *)
 (* inherits the parent's active set, so the cross-thread re-entry is seen   *)
 (* as a cycle and cut immediately.                                          *)
+(*                                                                         *)
+(* THUNK-CHANNEL COVERAGE: this model is channel-agnostic. The thunk         *)
+(* table's `Blackhole` state is the same "cut a recursion on re-entry"       *)
+(* mechanism as the subgoal `ACTIVE_EVAL_SET`, and the thunk seed            *)
+(* (`push_blackhole_seed_keys` -> `snapshot_active_hashes` ->                *)
+(* `SeedActiveScope`) is the same `SeedActiveOnFanout` fix. So the BUG cfg    *)
+(* reproduces the thunk RUNAWAY (a missed cross-thread cut -> unbounded      *)
+(* re-derivation -> 600s timeout) and the FIXED cfg proves the seed closes   *)
+(* it — for BOTH channels. The thunk-specific NAMESPACE-COLLISION hazard of  *)
+(* sharing one seed set (which this abstract model cannot express) is        *)
+(* covered separately by `ThunkChannelSeed.tla`.                             *)
 (***************************************************************************)
 EXTENDS Naturals
 

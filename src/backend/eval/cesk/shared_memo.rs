@@ -244,6 +244,16 @@ impl SharedMemoEntry {
         }
     }
 
+    /// Push this entry's published bag into `out` if DONE — a GC root, since the
+    /// bag is reachable only through the store.
+    fn collect_result_roots(&self, out: &mut Vec<MettaValue>) {
+        if self.state() == memo_state::DONE {
+            if let Some(r) = self.results.get() {
+                out.extend(r.iter().cloned());
+            }
+        }
+    }
+
     /// Park until the entry reaches DONE or ERROR; returns the terminal state.
     /// Holds `wait_lock` across the state-check+wait so a concurrent publish
     /// cannot slip a notify in between (no lost wakeup).
@@ -482,6 +492,20 @@ impl SharedMemoStore {
     pub fn publish_error(&self, channel: MemoChannel, hash: u64) {
         self.entry(channel, hash).publish_error();
     }
+
+    /// GC root collection. A DONE entry's published bag is reachable ONLY through
+    /// the store (a parked awaiter or a later reader will read it), so the
+    /// collector must root it — wired into `collect_global_anchors` at activation
+    /// (Step 4b). Dormant-safe: an empty store yields no roots. INFLIGHT bags are
+    /// not here (the deriving thread roots them on its own stack until publish).
+    pub fn collect_roots(&self, out: &mut Vec<MettaValue>) {
+        for entry in self.thunks.iter() {
+            entry.value().collect_result_roots(out);
+        }
+        for entry in self.subgoals.iter() {
+            entry.value().collect_result_roots(out);
+        }
+    }
 }
 
 /// The process-wide store handle (lazily initialized). Entries are content-keyed
@@ -670,5 +694,22 @@ mod tests {
             h.join().expect("await thread"),
             MemoLookup::AwaitedRead(_) | MemoLookup::Read(_)
         ));
+    }
+
+    #[test]
+    fn collect_roots_walks_done_entries() {
+        let s = SharedMemoStore::new();
+        let mut roots: Vec<MettaValue> = Vec::new();
+        s.collect_roots(&mut roots);
+        assert_eq!(roots.len(), 0, "empty store has no roots");
+        assert!(matches!(
+            s.lookup_or_claim(MemoChannel::Thunk, 9, 1, 0),
+            MemoLookup::Claimed
+        ));
+        s.collect_roots(&mut roots);
+        assert_eq!(roots.len(), 0, "INFLIGHT entry has no published roots");
+        s.publish_done(MemoChannel::Thunk, 9, SmallVec::new());
+        s.collect_roots(&mut roots);
+        assert_eq!(roots.len(), 0, "DONE entry with empty bag adds nothing");
     }
 }

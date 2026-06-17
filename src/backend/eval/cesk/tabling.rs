@@ -29,6 +29,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use smallvec::SmallVec;
 
@@ -47,12 +48,51 @@ thread_local! {
     /// - `unmark_eval_active()`: decrement count (CompleteSubgoal fired)
     /// - `is_actively_evaluating()`: check count > 0 (cycle detection)
     static ACTIVE_EVAL_SET: RefCell<HashMap<u64, u32>> = RefCell::new(HashMap::with_capacity(64));
+
+    /// #309/#266 cross-thread fixpoint seed (root cause #1). Hashes that were
+    /// active on the FORKING thread's lineage when a parallel branch was
+    /// dispatched. `ACTIVE_EVAL_SET` is thread-local, so a fanned-out worker —
+    /// which starts a FRESH trampoline with an empty active set — would NOT see a
+    /// parent-active subgoal S as a cycle, miss the fixpoint cut, and re-derive a
+    /// divergent/smaller bag that `CompleteSubgoal` then tables (a later identical
+    /// S is served the smaller bag -> a clean SUBSET of results drops). Seeding
+    /// the worker with the parent's active hashes makes `is_actively_evaluating`
+    /// return true for S, so the worker cuts to the EMPTY fixpoint exactly as the
+    /// parent would inline. SEPARATE from `ACTIVE_EVAL_SET` and NOT refcounted by
+    /// `mark`/`unmark` (the bytecode VM + JIT also `mark`/`unmark` `ACTIVE_EVAL_SET`;
+    /// entangling the seed with their refcount would underflow it). Maintained
+    /// solely by `SeedActiveScope` (RAII, refcounted only for nested re-entrancy).
+    static SEEDED_ACTIVE_SET: RefCell<HashMap<u64, u32>> = RefCell::new(HashMap::new());
 }
 
 /// Check if an expression hash is currently being evaluated (on the call stack).
+///
+/// Consults this thread's own `ACTIVE_EVAL_SET` marks AND the `SEEDED_ACTIVE_SET`
+/// (#309/#266: subgoals active on the FORKING thread's lineage when this worker
+/// was dispatched), so a fanned-out worker detects a parent-active cycle and cuts
+/// to the fixpoint EMPTY. The seed probe short-circuits on an empty seed map, so
+/// the FANOUT=0 / non-worker path stays byte-identical.
 #[inline]
 pub fn is_actively_evaluating(expr_hash: u64) -> bool {
     ACTIVE_EVAL_SET.with(|set| set.borrow().get(&expr_hash).copied().unwrap_or(0) > 0)
+        || SEEDED_ACTIVE_SET.with(|set| {
+            let s = set.borrow();
+            !s.is_empty() && s.get(&expr_hash).copied().unwrap_or(0) > 0
+        })
+}
+
+/// #309/#266 root cause #2: is THIS thread mid-derivation (some subgoal marked
+/// active, i.e. a `CompleteSubgoal` frame is pending)? `mark_eval_active` is
+/// called exactly when `CompleteSubgoal` is pushed and `unmark` when it fires, so
+/// a non-empty `ACTIVE_EVAL_SET` is equivalent to "a `CompleteSubgoal` is pending
+/// on this thread's continuation stack". Used to SKIP clearing the fixpoint memos
+/// on a GC-rendezvous RESUME — clearing them mid-derivation drops the in-flight
+/// cycle-cut marks and tables a corrupted (empty) result under the still-pending
+/// outer `CompleteSubgoal`. Checks only the thread's OWN marks, not the
+/// cross-thread seed (`SEEDED_ACTIVE_SET`).
+#[inline]
+pub fn active_eval_set_is_empty() -> bool {
+    ACTIVE_EVAL_SET.with(|set| set.borrow().is_empty())
 }
 
 /// Mark an expression as actively being evaluated.
@@ -79,10 +119,103 @@ pub fn unmark_eval_active(expr_hash: u64) {
     });
 }
 
-/// Clear the active evaluation set.
+/// Clear the active evaluation set. Does NOT clear `SEEDED_ACTIVE_SET`
+/// (#309/#266): the cross-thread seed MUST persist for the seeded worker's whole
+/// life so its recursive re-entries keep cutting to the fixpoint EMPTY. This is
+/// called by `clear_subgoal_table`, which the GC-rendezvous resume runs
+/// MID-derivation; clearing the seed there drops it and re-opens root cause #1
+/// (the runtime symptom: seeded workers whose seed is wiped by a concurrent GC
+/// resume still runaway/drop). The seed is balanced solely by `SeedActiveScope`
+/// (RAII enter/drop, which runs even on a panic-unwind), so no belt-and-suspenders
+/// clear is needed here.
 #[inline]
 pub fn clear_active_eval_set() {
     ACTIVE_EVAL_SET.with(|set| set.borrow_mut().clear());
+}
+
+/// #309/#266 root cause #1: snapshot the hashes active on THIS (forking) thread's
+/// lineage, for seeding into fanned-out workers. Returns the UNION of
+/// `ACTIVE_EVAL_SET` keys (this thread's own marks) AND `SEEDED_ACTIVE_SET` keys
+/// (a seed this thread itself inherited — so nested-within-nested fanout carries
+/// the seed transitively, closing the hole one level deeper; red-team R5).
+/// `None` when both are empty (no active subgoal -> no seed -> zero overhead).
+#[inline]
+pub fn snapshot_active_hashes() -> Option<Arc<SmallVec<[u64; 8]>>> {
+    let mut hashes: SmallVec<[u64; 8]> = SmallVec::new();
+    ACTIVE_EVAL_SET.with(|set| {
+        for (&h, &c) in set.borrow().iter() {
+            if c > 0 {
+                hashes.push(h);
+            }
+        }
+    });
+    SEEDED_ACTIVE_SET.with(|set| {
+        for (&h, &c) in set.borrow().iter() {
+            if c > 0 && !hashes.contains(&h) {
+                hashes.push(h);
+            }
+        }
+    });
+    if hashes.is_empty() {
+        None
+    } else {
+        Some(Arc::new(hashes))
+    }
+}
+
+/// #309/#266 root cause #1: RAII scope that seeds the worker's `SEEDED_ACTIVE_SET`
+/// with the forking thread's active hashes (captured by `snapshot_active_hashes`),
+/// so a cross-thread recursive re-entry of a parent-active subgoal is detected as
+/// a cycle and cut to the fixpoint EMPTY — byte-identical to the single-threaded
+/// inline cut. Mirrors `WorkerCaptureScope`. Refcounted set semantics make a
+/// nested `SeedActiveScope` (a worker that itself fans out and is re-entered)
+/// re-entrancy-safe; `Drop` removes exactly the entries this scope inserted.
+pub struct SeedActiveScope {
+    seeded: SmallVec<[u64; 8]>,
+    // !Send: manipulates thread-locals and must not cross threads.
+    _not_send: std::marker::PhantomData<*const ()>,
+}
+
+impl SeedActiveScope {
+    /// Seed the current thread's `SEEDED_ACTIVE_SET` with `hint`. No-op when
+    /// `hint` is `None` (the common, non-fanned-out case) — byte-identical.
+    #[inline]
+    pub fn enter(hint: Option<Arc<SmallVec<[u64; 8]>>>) -> Self {
+        let mut seeded: SmallVec<[u64; 8]> = SmallVec::new();
+        if let Some(hashes) = hint {
+            SEEDED_ACTIVE_SET.with(|set| {
+                let mut map = set.borrow_mut();
+                for &h in hashes.iter() {
+                    *map.entry(h).or_insert(0) += 1;
+                    seeded.push(h);
+                }
+            });
+        }
+        SeedActiveScope {
+            seeded,
+            _not_send: std::marker::PhantomData,
+        }
+    }
+}
+
+impl Drop for SeedActiveScope {
+    #[inline]
+    fn drop(&mut self) {
+        if self.seeded.is_empty() {
+            return;
+        }
+        SEEDED_ACTIVE_SET.with(|set| {
+            let mut map = set.borrow_mut();
+            for &h in self.seeded.iter() {
+                if let Some(c) = map.get_mut(&h) {
+                    *c -= 1;
+                    if *c == 0 {
+                        map.remove(&h);
+                    }
+                }
+            }
+        });
+    }
 }
 
 // ============================================================================

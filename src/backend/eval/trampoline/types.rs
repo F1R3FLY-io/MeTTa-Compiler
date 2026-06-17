@@ -254,6 +254,12 @@ pub struct ParallelDispatchHandle {
     /// which previously forced all four dispatch sites sequential inside
     /// PLN's `(let $derivations (collapse ...) ...)` body.
     pub tracked_vars_hint: Option<Arc<SmallVec<[MettaValue; 4]>>>,
+    /// #309/#266 root cause #1: the forking thread's active-subgoal hashes
+    /// (`snapshot_active_hashes`), seeded into each worker's `SEEDED_ACTIVE_SET`
+    /// (via `SeedActiveScope`) so a cross-thread recursive re-entry detects the
+    /// cycle and cuts to the fixpoint EMPTY. Sibling of `tracked_vars_hint`;
+    /// rides the same dispatch->worker lifetime. `None` when no subgoal is active.
+    pub active_eval_hint: Option<Arc<SmallVec<[u64; 8]>>>,
     /// E1-FLIP / CEX-1 (D2): RAII registration of this dispatch's fan-out in the
     /// global `LIVE_DISPATCHES` anchor, so the dedicated GC thread can walk the
     /// branch INPUTS + completed OUTPUTS for the dispatch's lifetime
@@ -393,6 +399,8 @@ pub struct ParallelCollapseDispatchHandle {
     pub(crate) _dispatch_roots_arc: Arc<ParallelCollapseRoots>,
     /// See `ParallelDispatchHandle::tracked_vars_hint` (Phase 10.A).
     pub tracked_vars_hint: Option<Arc<SmallVec<[MettaValue; 4]>>>,
+    /// #309/#266 root cause #1: see `ParallelDispatchHandle::active_eval_hint`.
+    pub active_eval_hint: Option<Arc<SmallVec<[u64; 8]>>>,
     /// E1-FLIP / CEX-1 (D2): see `ParallelDispatchHandle::_live_dispatch`.
     pub(crate) _live_dispatch: Option<crate::backend::models::gc_allocator::LiveDispatchHandle>,
 }

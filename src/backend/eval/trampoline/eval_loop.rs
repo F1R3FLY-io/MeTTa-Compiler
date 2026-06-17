@@ -317,8 +317,22 @@ pub(crate) fn clear_all_worker_thread_local_caches() {
     // (iii) The DIRTY-gated tabling/thunk value tables — near-zero cost when the
     //       worker did no tabling; they ARE published as roots (roots.rs:319-320) so
     //       an idle pooled worker can hold swept Addrs in them across the next cycle.
-    crate::backend::eval::cesk::tabling::clear_subgoal_table();
-    crate::backend::eval::cesk::thunk::clear_thunk_table();
+    //
+    // #309/#266 root cause #2: SKIP these while THIS thread is mid-derivation (a
+    // CompleteSubgoal frame is pending, i.e. ACTIVE_EVAL_SET non-empty). On a
+    // GC-rendezvous RESUME mid-derivation, clearing the SubgoalTable +
+    // ACTIVE_EVAL_SET (clear_subgoal_table also clears the active set) drops the
+    // in-flight cycle-cut marks -> a re-encountered subgoal is no longer detected
+    // as a cycle -> tabled empty under the still-pending outer CompleteSubgoal ->
+    // a dependent inference layer drops. These memos are GC-rooted in the park
+    // witness and lookup-revalidated by space_epoch, so skipping the clear
+    // introduces no Addr-staleness (only (i)+(ii) above carry that, and they
+    // ALWAYS clear). At quiescent points (task-end teardown, between tasks)
+    // ACTIVE_EVAL_SET is empty, so the pooled-worker hygiene clear still runs.
+    if crate::backend::eval::cesk::active_eval_set_is_empty() {
+        crate::backend::eval::cesk::tabling::clear_subgoal_table();
+        crate::backend::eval::cesk::thunk::clear_thunk_table();
+    }
 }
 
 /// Worker park-RESUME cache clear. On the dedicated index-GC path a sweep may have run while
@@ -2569,6 +2583,11 @@ fn parallel_dispatch(
     // correct answers on the worker.
     let parent_tracked_vars: Option<Arc<SmallVec<[MettaValue; 4]>>> =
         active_tracked_vars().map(Arc::new);
+    // #309/#266 root cause #1: snapshot the parent's active-subgoal hashes ONCE
+    // before the spawn loop; each worker gets a cheap Arc::clone, seeded into its
+    // SEEDED_ACTIVE_SET via `SeedActiveScope` so a cross-thread recursive re-entry
+    // cuts to the fixpoint EMPTY. `None` (zero overhead) when no subgoal is active.
+    let parent_active_eval = crate::backend::eval::cesk::snapshot_active_hashes();
 
     // Spawn ALL branches to the pool — including branch 0 (stack-safety mandate).
     for (slot, (branch_expr, branch_bindings)) in branches.iter().enumerate() {
@@ -2580,6 +2599,7 @@ fn parallel_dispatch(
         let done_pair = Arc::clone(&done_pair);
         let cancel_token = Arc::clone(&cancel_token);
         let worker_tracked_vars = parent_tracked_vars.clone();
+        let worker_active_eval = parent_active_eval.clone();
 
         // WFST classification: same as the old parallel_branch_eval path.
         let scheduler = crate::backend::scheduler::global_scheduler();
@@ -2658,6 +2678,13 @@ fn parallel_dispatch(
             // the right answers during worker eval. No-op if parent has no
             // active collapse-bind. RAII: drops on closure exit OR panic.
             let _worker_capture_scope = WorkerCaptureScope::enter(worker_tracked_vars);
+            // #309/#266 root cause #1: seed this worker's cross-thread fixpoint
+            // active-set so a recursive re-entry of a parent-active subgoal is
+            // detected as a cycle and cut (no missed cut -> no dropped layer).
+            // RAII: removed on closure exit OR panic, nested in the same guard
+            // stack as WorkerCaptureScope.
+            let _seed_active_scope =
+                crate::backend::eval::cesk::SeedActiveScope::enter(worker_active_eval);
             let _demand_scope = DemandScope::enter(demand);
             let _worker_marker = WorkerEvalScope::enter();
             // Cache-root refresh: branch workers evaluate arbitrary rule RHS
@@ -2896,6 +2923,7 @@ fn parallel_dispatch(
         stall_state: Mutex::new(StallState::default()),
         _dispatch_roots_arc: root_provider,
         tracked_vars_hint,
+        active_eval_hint: parent_active_eval,
         // E1-FLIP / CEX-1 (D2): RAII anchor deregistration (None when dormant).
         _live_dispatch: live_dispatch,
     }
@@ -3359,6 +3387,9 @@ fn parallel_collapse_dispatch(
     // active collapse-bind. See `WorkerCaptureScope` docs at `:1380`.
     let parent_tracked_vars: Option<Arc<SmallVec<[MettaValue; 4]>>> =
         active_tracked_vars().map(Arc::new);
+    // #309/#266 root cause #1: snapshot the parent's active-subgoal hashes for
+    // seeding each worker (see `parallel_dispatch`).
+    let parent_active_eval = crate::backend::eval::cesk::snapshot_active_hashes();
 
     // Spawn ALL items to the pool — NO inline item-0 (stack-safety mandate).
     for (slot, (item_expr, item_bindings)) in items.iter().enumerate() {
@@ -3369,6 +3400,7 @@ fn parallel_collapse_dispatch(
         let remaining = Arc::clone(&remaining);
         let done_pair = Arc::clone(&done_pair);
         let worker_tracked_vars = parent_tracked_vars.clone();
+        let worker_active_eval = parent_active_eval.clone();
 
         let scheduler = crate::backend::scheduler::global_scheduler();
         let (cost_class, _action) = scheduler.classify_and_transduce(&item_expr);
@@ -3462,6 +3494,11 @@ fn parallel_collapse_dispatch(
             // the right answers during worker eval. No-op if parent has no
             // active collapse-bind. RAII: drops on closure exit OR panic.
             let _worker_capture_scope = WorkerCaptureScope::enter(worker_tracked_vars);
+            // #309/#266 root cause #1: seed this collapse worker's cross-thread
+            // fixpoint active-set (see `parallel_dispatch`). RAII; nested inside
+            // the same guard stack.
+            let _seed_active_scope =
+                crate::backend::eval::cesk::SeedActiveScope::enter(worker_active_eval);
             let _demand_scope =
                 DemandScope::enter(crate::backend::eval::cesk::coroutine::Demand::All);
             let _worker_marker = WorkerEvalScope::enter();
@@ -3626,6 +3663,7 @@ fn parallel_collapse_dispatch(
         // Phase 10.A: handed off to the WaitForParallelCollapse continuation
         // for sidecar per-branch binding-projection reconstruction.
         tracked_vars_hint: parent_tracked_vars,
+        active_eval_hint: parent_active_eval,
         // E1-FLIP / CEX-1 (D2): RAII anchor deregistration (None when dormant).
         _live_dispatch: live_dispatch,
     }

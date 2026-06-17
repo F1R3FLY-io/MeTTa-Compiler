@@ -90,8 +90,9 @@ pub use state::SeckState;
 pub use store::{AllocHint, AllocRegion, Store};
 pub use striped_queue::{current_worker_id, set_worker_id, StripedQueue, StripedTask};
 pub use tabling::{
-    clear_active_eval_set, clear_subgoal_table, invalidate_subgoal_table, is_actively_evaluating,
-    mark_eval_active, unmark_eval_active, with_subgoal_table, SubgoalTable, TableLookup,
+    active_eval_set_is_empty, clear_active_eval_set, clear_subgoal_table, invalidate_subgoal_table,
+    is_actively_evaluating, mark_eval_active, snapshot_active_hashes, unmark_eval_active,
+    with_subgoal_table, SeedActiveScope, SubgoalTable, TableLookup,
 };
 pub use thread_local_region::{
     is_thread_region_active, with_thread_local_region, RegionGuard, ThreadLocalRegion,

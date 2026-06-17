@@ -19,10 +19,13 @@
 //! but no lookup consults [`is_ancestor`] yet (the shared store wires it in a
 //! later step), so behavior — including FANOUT=0 byte-identity — is unchanged.
 
+use crate::backend::models::MettaValue;
 use dashmap::DashMap;
+use smallvec::SmallVec;
 use std::cell::Cell;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
 /// Monotonic source of fresh derivation ids. `0` is reserved for "top-level / no
 /// parent".
@@ -133,6 +136,264 @@ pub fn is_ancestor(ancestor: u64, descendant: u64) -> bool {
     false
 }
 
+// =========================================================================
+// Step 3: the shared content-keyed memo store (DORMANT — built + tested here;
+// wired into the eval channels in a later step). See
+// docs/design/SHARED_MEMO_STORE_309.md §3-4. Concurrency: lock-free `DashMap`
+// for the maps; per-entry `AtomicU8` state + `OnceLock` result; a per-entry
+// `Mutex`+`Condvar` only for the rare await; a single-locked wait-for graph for
+// deadlock detection. (Loom verification of the primitives is a later sub-step;
+// this sub-step is single-threaded-correct + unit-tested.)
+// =========================================================================
+
+/// Memo entry lifecycle, stored as an `AtomicU8`.
+mod memo_state {
+    pub const EMPTY: u8 = 0; // no entry / never claimed
+    pub const INFLIGHT: u8 = 1; // some derivation owns it and is computing
+    pub const DONE: u8 = 2; // result published (read it)
+    pub const ERROR: u8 = 3; // torn-read / panic — awaiters must re-derive
+}
+
+/// One shared memo cell for a content hash. The `state` is the source of truth;
+/// `results` is published exactly once (via `OnceLock`) on the EMPTY→…→DONE edge.
+pub struct SharedMemoEntry {
+    state: AtomicU8,
+    /// Derivation-id of the INFLIGHT owner (`0` = none). Read by the cut decision
+    /// (`owner == me` ⇒ same-derivation cycle; ancestor ⇒ cross-thread cycle).
+    owner: AtomicU64,
+    results: OnceLock<SmallVec<[MettaValue; 2]>>,
+    /// `space_mutation_epoch` captured when INFLIGHT was claimed — a DONE entry
+    /// stale w.r.t. a sibling `add-atom` is rejected by the reader (Step 4).
+    space_epoch: AtomicU64,
+    /// Park/notify substrate for awaiters; the predicate is `state ∈ {DONE,ERROR}`
+    /// and `_wait_lock` only fences the wait/notify against a lost wakeup.
+    wait_lock: Mutex<()>,
+    cv: Condvar,
+}
+
+impl SharedMemoEntry {
+    fn new() -> Self {
+        SharedMemoEntry {
+            state: AtomicU8::new(memo_state::EMPTY),
+            owner: AtomicU64::new(0),
+            results: OnceLock::new(),
+            space_epoch: AtomicU64::new(0),
+            wait_lock: Mutex::new(()),
+            cv: Condvar::new(),
+        }
+    }
+
+    #[inline]
+    pub fn state(&self) -> u8 {
+        self.state.load(Ordering::Acquire)
+    }
+    #[inline]
+    pub fn owner(&self) -> u64 {
+        self.owner.load(Ordering::Acquire)
+    }
+    #[inline]
+    pub fn space_epoch(&self) -> u64 {
+        self.space_epoch.load(Ordering::Acquire)
+    }
+
+    /// CAS EMPTY→INFLIGHT, recording the owner + space epoch. Returns `true` iff
+    /// THIS caller won the claim (and must therefore derive + publish).
+    pub fn try_claim(&self, my_id: u64, space_epoch: u64) -> bool {
+        if self
+            .state
+            .compare_exchange(
+                memo_state::EMPTY,
+                memo_state::INFLIGHT,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            self.owner.store(my_id, Ordering::Release);
+            self.space_epoch.store(space_epoch, Ordering::Release);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Publish the result and transition INFLIGHT→DONE, waking awaiters. The
+    /// `state` store (Release) happens before taking `wait_lock`, so a waiter that
+    /// is between its state-check and `cv.wait` is fenced by the lock and cannot
+    /// miss the wakeup.
+    pub fn publish_done(&self, results: SmallVec<[MettaValue; 2]>) {
+        let _ = self.results.set(results);
+        self.state.store(memo_state::DONE, Ordering::Release);
+        let _g = self.wait_lock.lock().expect("memo entry wait_lock");
+        self.cv.notify_all();
+    }
+
+    /// Mark ERROR (torn read / owner panic) and wake awaiters to re-derive.
+    pub fn publish_error(&self) {
+        self.state.store(memo_state::ERROR, Ordering::Release);
+        let _g = self.wait_lock.lock().expect("memo entry wait_lock");
+        self.cv.notify_all();
+    }
+
+    /// Read the published result iff DONE.
+    pub fn read_done(&self) -> Option<SmallVec<[MettaValue; 2]>> {
+        if self.state() == memo_state::DONE {
+            self.results.get().cloned()
+        } else {
+            None
+        }
+    }
+
+    /// Park until the entry reaches DONE or ERROR; returns the terminal state.
+    /// Holds `wait_lock` across the state-check+wait so a concurrent publish
+    /// cannot slip a notify in between (no lost wakeup).
+    pub fn await_terminal(&self) -> u8 {
+        let mut g = self.wait_lock.lock().expect("memo entry wait_lock");
+        loop {
+            let s = self.state();
+            if s == memo_state::DONE || s == memo_state::ERROR {
+                return s;
+            }
+            g = self.cv.wait(g).expect("memo entry cv wait");
+        }
+    }
+}
+
+/// Wait-for graph for cross-thread deadlock detection. Node = derivation id;
+/// edge `a → b` = "a is parked awaiting b's in-flight entry". The graph is kept
+/// ACYCLIC by construction: [`try_add_edge`](WaitForGraph::try_add_edge) inserts
+/// `a → b` only when it would NOT close a cycle, so no set of parked awaiters can
+/// deadlock.
+pub struct WaitForGraph {
+    adj: Mutex<HashMap<u64, SmallVec<[u64; 4]>>>,
+}
+
+impl WaitForGraph {
+    fn new() -> Self {
+        WaitForGraph {
+            adj: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Atomically test-and-insert: add `from → to` iff `from` is NOT already
+    /// reachable from `to` (which would make `from → to` close a cycle). Returns
+    /// `true` iff the edge was added — i.e. it is safe for `from` to PARK awaiting
+    /// `to`. `false` means awaiting would deadlock; the caller must cut/local-eval.
+    pub fn try_add_edge(&self, from: u64, to: u64) -> bool {
+        let mut adj = self.adj.lock().expect("waitfor graph lock");
+        if Self::reachable(&adj, to, from) {
+            return false;
+        }
+        adj.entry(from).or_default().push(to);
+        true
+    }
+
+    /// Remove `from → to` (called when the awaiter wakes).
+    pub fn remove_edge(&self, from: u64, to: u64) {
+        let mut adj = self.adj.lock().expect("waitfor graph lock");
+        if let Some(v) = adj.get_mut(&from) {
+            if let Some(p) = v.iter().position(|&x| x == to) {
+                v.swap_remove(p);
+            }
+            if v.is_empty() {
+                adj.remove(&from);
+            }
+        }
+    }
+
+    /// Is `target` reachable from `start` via await edges? (DFS over the
+    /// adjacency held under the caller's lock.)
+    fn reachable(adj: &HashMap<u64, SmallVec<[u64; 4]>>, start: u64, target: u64) -> bool {
+        if start == target {
+            return true;
+        }
+        let mut stack: SmallVec<[u64; 16]> = SmallVec::new();
+        stack.push(start);
+        let mut seen: HashSet<u64> = HashSet::new();
+        while let Some(n) = stack.pop() {
+            if !seen.insert(n) {
+                continue;
+            }
+            if let Some(neighbors) = adj.get(&n) {
+                for &m in neighbors {
+                    if m == target {
+                        return true;
+                    }
+                    stack.push(m);
+                }
+            }
+        }
+        false
+    }
+}
+
+/// Which content-hash namespace an operation targets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemoChannel {
+    Thunk,
+    Subgoal,
+}
+
+/// The process-wide shared memo store: cross-thread memoization for the thunk and
+/// subgoal channels plus the wait-for graph that keeps awaits deadlock-free.
+pub struct SharedMemoStore {
+    thunks: DashMap<u64, Arc<SharedMemoEntry>>,
+    subgoals: DashMap<u64, Arc<SharedMemoEntry>>,
+    waitfor: WaitForGraph,
+}
+
+impl SharedMemoStore {
+    fn new() -> Self {
+        SharedMemoStore {
+            thunks: DashMap::new(),
+            subgoals: DashMap::new(),
+            waitfor: WaitForGraph::new(),
+        }
+    }
+
+    #[inline]
+    fn map(&self, channel: MemoChannel) -> &DashMap<u64, Arc<SharedMemoEntry>> {
+        match channel {
+            MemoChannel::Thunk => &self.thunks,
+            MemoChannel::Subgoal => &self.subgoals,
+        }
+    }
+
+    /// The (lazily created) entry for `hash` in `channel`.
+    pub fn entry(&self, channel: MemoChannel, hash: u64) -> Arc<SharedMemoEntry> {
+        self.map(channel)
+            .entry(hash)
+            .or_insert_with(|| Arc::new(SharedMemoEntry::new()))
+            .clone()
+    }
+
+    /// The wait-for graph (deadlock detection).
+    #[inline]
+    pub fn waitfor(&self) -> &WaitForGraph {
+        &self.waitfor
+    }
+
+    /// Drop all entries (a top-level `!` boundary; the thread-local tables are
+    /// cleared there too). Cheap when empty.
+    pub fn clear(&self) {
+        self.thunks.clear();
+        self.subgoals.clear();
+    }
+
+    /// Number of live entries in a channel (diagnostics / tests).
+    pub fn len(&self, channel: MemoChannel) -> usize {
+        self.map(channel).len()
+    }
+}
+
+/// The process-wide store handle (lazily initialized). Entries are content-keyed
+/// and space-epoch-stamped, so a stale entry is rejected at read time; `clear` is
+/// called at `!` boundaries.
+pub fn store() -> &'static SharedMemoStore {
+    static STORE: OnceLock<SharedMemoStore> = OnceLock::new();
+    STORE.get_or_init(SharedMemoStore::new)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,5 +425,61 @@ mod tests {
             assert!(parent_map().contains_key(&id));
         }
         assert!(!parent_map().contains_key(&id), "entry removed on drop");
+    }
+
+    #[test]
+    fn entry_claim_publish_read() {
+        let e = SharedMemoEntry::new();
+        assert_eq!(e.state(), memo_state::EMPTY);
+        assert!(e.try_claim(7, 0), "first claim wins");
+        assert_eq!(e.state(), memo_state::INFLIGHT);
+        assert_eq!(e.owner(), 7);
+        assert!(!e.try_claim(9, 0), "second claim loses (already INFLIGHT)");
+        assert!(e.read_done().is_none(), "not done yet");
+        e.publish_done(SmallVec::new());
+        assert_eq!(e.state(), memo_state::DONE);
+        assert_eq!(e.read_done().map(|v| v.len()), Some(0));
+    }
+
+    #[test]
+    fn waitfor_rejects_cycle_admits_dag() {
+        let g = WaitForGraph::new();
+        assert!(g.try_add_edge(1, 2), "1->2 ok");
+        assert!(g.try_add_edge(2, 3), "2->3 ok (chain)");
+        assert!(!g.try_add_edge(3, 1), "3->1 would close 1->2->3->1 — rejected");
+        assert!(g.try_add_edge(1, 4), "1->4 ok (no cycle)");
+        g.remove_edge(2, 3);
+        assert!(g.try_add_edge(3, 1), "3->1 ok after 2->3 removed");
+    }
+
+    #[test]
+    fn waitfor_self_edge_is_a_cycle() {
+        let g = WaitForGraph::new();
+        assert!(!g.try_add_edge(5, 5), "self-await is a cycle");
+    }
+
+    #[test]
+    fn store_entry_disjoint_channels_and_clear() {
+        let s = SharedMemoStore::new();
+        let e1 = s.entry(MemoChannel::Thunk, 100);
+        let e2 = s.entry(MemoChannel::Thunk, 100);
+        assert!(Arc::ptr_eq(&e1, &e2), "same hash => same entry");
+        assert_eq!(s.len(MemoChannel::Thunk), 1);
+        let _ = s.entry(MemoChannel::Subgoal, 100);
+        assert_eq!(s.len(MemoChannel::Subgoal), 1, "channels are disjoint");
+        s.clear();
+        assert_eq!(s.len(MemoChannel::Thunk), 0);
+        assert_eq!(s.len(MemoChannel::Subgoal), 0);
+    }
+
+    #[test]
+    fn await_terminal_wakes_on_publish() {
+        let e = Arc::new(SharedMemoEntry::new());
+        assert!(e.try_claim(1, 0));
+        let e2 = Arc::clone(&e);
+        let h = std::thread::spawn(move || e2.await_terminal());
+        std::thread::yield_now();
+        e.publish_done(SmallVec::new());
+        assert_eq!(h.join().expect("await thread"), memo_state::DONE);
     }
 }

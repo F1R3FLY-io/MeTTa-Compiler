@@ -129,25 +129,48 @@ correctness-gating thread-local unseeded across the fanout boundary:
 - **Formal wall:** all four models, each bug-cfg → invariant violated, fixed-cfg → holds.
 - **No test regression:** `cargo nextest run --lib` (re-run after M3+M4).
 
-## 6. Open residual (honest) — the ~12.5% frisbee drop
+## 6. Resolution — M4 reverted (structural over-cut), genuine fix = shared memo store
 
-What M1–M4 closed: the **runaway** (no timeout survives M4) and the **conclusion set** for 21/24
-contended runs. What remains: **~12.5% of contended runs drop the `frisbee` conclusion** from the
-`(PLNobjectsOfCategory … bring)` query (§5). This is a genuine wrong answer, distinct from the
-fixed cycle-detection runaway. Candidate mechanisms, to be discriminated by evidence (not assumed):
+**Discrimination (done, 2026-06-17).** An A/B of the same binary with the M4 seed cut ON vs OFF
+(`METTATRON_DISABLE_THUNK_SEED`, 16 contended runs each) was decisive: M4 ON = 11/16 correct, 4 drops,
+1 timeout, 5 distinct result-sets; **M4 OFF = 15/16, 1 drop, 0 timeout, 2 sets**. M4 is **net-negative**.
+A read-only source root-cause then proved the mechanism is **seed over-cut — structural, not a hash
+collision**: the thunk key is content-only (no derivation lineage, `eval_loop.rs:7951-7959`) and the
+seed is a **frozen** "all in-flight Blackhole thunks" snapshot never refreshed on Blackhole→Evaluated,
+so a worker that merely **needs** a thunk a sibling is concurrently deriving — a **shared in-flight
+dependency**, routine across the 4 independent `superpose` branches of the query — is miscut to a
+Blackhole error and stripped. A content hash + frozen set **cannot distinguish a genuine cross-thread
+cycle from a shared dependency**. (Mechanisms 2/3 above are thereby ruled out: no merge error is raised,
+and the cut — not the depth-gate — is the A/B-proven cause.)
 
-1. **Seed over-cut (freshening-hash false match).** The seed assumes the parent and worker compute the
-   **identical** content hash for the "same" logical continuation. The thunk hash folds binding
-   *values*, which can carry freshened `$__fr_{epoch}_*` names. If a frisbee-branch thunk hash
-   coincidentally matched a *seeded* hash from an unrelated in-flight thunk, the M4 probe would cut a
-   non-cyclic frisbee derivation to `Blackhole` (error), which the top-level filter then strips → the
-   frisbee vanishes. The domain tag (H1) rules out subgoal↔thunk collisions but not thunk↔thunk ones.
-2. **Merge/scheduling loss.** The frisbee branch's bag could be lost on the `WaitForParallelCollapse`
-   merge path under a specific interleaving (a slot completing with fewer results), independent of the
-   seed.
-3. **Depth-gated cut timing.** A worker restarts at `depth 0`; the subgoal cut is gated at `depth ≥ 2`,
-   so a worker may take 1–2 extra unfolds before cutting, perturbing which branch tables first.
+**M4 was REVERTED** (commented out with the root cause, per the never-delete mandate). M1+M2 (subgoal
+seed/guards) + M3 (thunk mid-clear guard) are KEPT — the runaway was tamed by M1+M2, not M4.
+Post-revert: FANOUT=0 byte-identical; 24-run FANOUT=8 SET-level **22/24** correct (vs M4-on's worse),
+the frisbee over-cut essentially gone; residual = 1 drop + the rare runaway M4 had targeted.
 
-Next step is to **discriminate**, e.g. A/B the +M4 binary against the +M3 binary on the *same* seeds
-(does the frisbee runaway-without-M4 become drop-with-M4? → mechanism 1), and instrument the frisbee
-branch's parent-captured vs worker-recomputed thunk hash for equality (→ rules mechanism 1 in/out).
+## 7. The genuine fix (approved) — shared content-keyed memo store (staged)
+
+The residual is the **structural** gap: one logical memoized fixpoint derivation is split across threads,
+but the memo + cycle state is per-thread. The approved fix replaces the cross-thread-unsafe thread-local
+thunk/subgoal tables with a **SHARED content-keyed memo store**:
+- **Read** another thread's `Evaluated` result (fixes re-derivation runaway + bag multiplicity);
+- **Await** an in-flight one — a true dependency — **never miscut it**;
+- **Cut only a genuine cycle**, decided by a transported **derivation-id lineage** (`owner == me` or
+  `owner is my ancestor`), with a **wait-for-graph** + **local-eval fallback** that *provably cannot
+  deadlock* against the parent-blocks-on-workers merge (the blocked parent is always an ancestor, so a
+  worker needing its thunk takes the non-blocking branch and never parks on the parent).
+
+**Staged so every commit is correct** (Step 2 is a shippable correct floor at the conclusion-SET level;
+Steps 3–5 recover parallelism):
+
+| Step | What | Correct? | TLA model |
+|------|------|----------|-----------|
+| 1 | Lineage-id transport + `is_ancestor` (plumbing) | no-op | — |
+| 2 | Serialize-on-contention fallback | ✓ 24/24 SET (floor) | `SerializeMemoizedDerivation` |
+| 3 | `SharedMemoStore` (DashMap) + unit/loom tests | dormant | `SharedMemoAwaitNoDeadlock` |
+| 4 | Wire thunk channel (read/await/cut) | ✓ + parallel | +`NoOverCut` |
+| 5 | Wire subgoal channel, subsume M1 | ✓ both channels | retarget |
+
+Validation each step: FANOUT=0 byte-identical sentinel; 24-run FANOUT=8 at the conclusion-SET level
+(`sort -u`, not raw line count); `cargo nextest`; the step's TLA model (bug-cfg→violated /
+fix-cfg→holds); and `scripts/verify_cesk_gc_all.sh` at the capstone.

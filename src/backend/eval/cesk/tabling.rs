@@ -156,11 +156,12 @@ pub fn snapshot_active_hashes() -> Option<Arc<SmallVec<[u64; 8]>>> {
             }
         }
     });
-    // #309/#266 root cause #1 (THUNK channel): union this thread's in-flight thunk
-    // Blackhole seed keys (domain-tagged, disjoint from subgoal hashes) so a
-    // fanned-out worker inherits them in SEEDED_ACTIVE_SET and cuts a cross-thread
-    // thunk re-entry exactly as the subgoal seed does. Dedup'd inside the push.
-    crate::backend::eval::cesk::thunk::collect_blackhole_hashes(&mut hashes);
+    // #309/#266 M4 (thunk cross-thread seed) REVERTED 2026-06-17 — unioning this
+    // thread's Blackhole thunk hashes into the worker seed was proven net-negative
+    // (it miscut shared in-flight dependencies; see thunk.rs `lookup` Absent-
+    // branch for the root cause). Only the SUBGOAL channel (ACTIVE_EVAL_SET +
+    // SEEDED_ACTIVE_SET) is seeded. Reverted line was:
+    //   crate::backend::eval::cesk::thunk::collect_blackhole_hashes(&mut hashes);
     if hashes.is_empty() {
         None
     } else {

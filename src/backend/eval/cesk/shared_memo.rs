@@ -244,16 +244,6 @@ impl SharedMemoEntry {
         }
     }
 
-    /// Push this entry's published bag into `out` if DONE — a GC root, since the
-    /// bag is reachable only through the store.
-    fn collect_result_roots(&self, out: &mut Vec<MettaValue>) {
-        if self.state() == memo_state::DONE {
-            if let Some(r) = self.results.get() {
-                out.extend(r.iter().cloned());
-            }
-        }
-    }
-
     /// Park until the entry reaches DONE or ERROR; returns the terminal state.
     /// Holds `wait_lock` across the state-check+wait so a concurrent publish
     /// cannot slip a notify in between (no lost wakeup).
@@ -493,19 +483,19 @@ impl SharedMemoStore {
         self.entry(channel, hash).publish_error();
     }
 
-    /// GC root collection. A DONE entry's published bag is reachable ONLY through
-    /// the store (a parked awaiter or a later reader will read it), so the
-    /// collector must root it — wired into `collect_global_anchors` at activation
-    /// (Step 4b). Dormant-safe: an empty store yields no roots. INFLIGHT bags are
-    /// not here (the deriving thread roots them on its own stack until publish).
-    pub fn collect_roots(&self, out: &mut Vec<MettaValue>) {
-        for entry in self.thunks.iter() {
-            entry.value().collect_result_roots(out);
-        }
-        for entry in self.subgoals.iter() {
-            entry.value().collect_result_roots(out);
-        }
-    }
+    // GC-safety — UNRESOLVED design decision (store is dormant, so nothing is
+    // broken yet). VERIFIED that the index-GC is MARK-FROM-ROOTS-ONLY:
+    // `project_roots_to_addrs` (index_heap.rs:2092) marks ONLY the supplied root
+    // slice, and the sweep's hash-cons `retain` (index_heap.rs:1276) FOLLOWS the
+    // mark (it does not pin). A `MettaValue` is a bare `Copy` `Addr` handle with no
+    // refcount, so a bag held ONLY in this store would NOT be retained — unmarked
+    // => swept => silent ABA (the node slot has no generation). Therefore, BEFORE
+    // this store may hold bags on the live eval path, GC-safety MUST be resolved:
+    // either (a) make it a named anchor in `collect_global_anchors` (like
+    // `collect_thunk_roots`) + join the post-sweep ABA clear, or (b) redesign it to
+    // hold NO bags past machine-reachability (coordination-only: track in-flight
+    // owners for the lineage cut, store no values). See
+    // docs/post-mortems/PARALLEL_FANOUT_TABLING_309_266.md §8.
 }
 
 /// The process-wide store handle (lazily initialized). Entries are content-keyed
@@ -696,20 +686,4 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn collect_roots_walks_done_entries() {
-        let s = SharedMemoStore::new();
-        let mut roots: Vec<MettaValue> = Vec::new();
-        s.collect_roots(&mut roots);
-        assert_eq!(roots.len(), 0, "empty store has no roots");
-        assert!(matches!(
-            s.lookup_or_claim(MemoChannel::Thunk, 9, 1, 0),
-            MemoLookup::Claimed
-        ));
-        s.collect_roots(&mut roots);
-        assert_eq!(roots.len(), 0, "INFLIGHT entry has no published roots");
-        s.publish_done(MemoChannel::Thunk, 9, SmallVec::new());
-        s.collect_roots(&mut roots);
-        assert_eq!(roots.len(), 0, "DONE entry with empty bag adds nothing");
-    }
 }

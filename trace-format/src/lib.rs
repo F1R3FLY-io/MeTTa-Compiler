@@ -1200,7 +1200,7 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_header_v2() {
+    fn roundtrip_header_current_version() {
         let header = TraceHeader {
             source_file: "test.metta".to_string(),
             start_time_ns: 1_234_567_890,
@@ -1212,7 +1212,7 @@ mod tests {
         let bytes = serialize(&header);
         let decoded: TraceHeader = deserialize(&bytes).expect("deserialize should succeed");
         assert_eq!(header, decoded);
-        assert_eq!(decoded.format_version, 2);
+        assert_eq!(decoded.format_version, TRACE_FORMAT_VERSION);
     }
 
     #[test]

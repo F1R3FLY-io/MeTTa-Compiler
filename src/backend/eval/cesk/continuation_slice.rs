@@ -658,7 +658,7 @@ pub fn restore_from_bytes(buf: &[u8]) -> Result<RestoredSuspension, SliceError> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::eval::cesk::index_heap::global_index_heap;
+    use crate::backend::eval::cesk::index_heap::{enter_index_mode_for_test, global_index_heap};
     use crate::backend::models::{MettaValueFactory, ValueView};
 
     /// Build a small heap value via the index factory.
@@ -681,6 +681,7 @@ mod tests {
 
     #[test]
     fn capture_restore_round_trip_rebuilds_structure() {
+        let _mode = enter_index_mode_for_test();
         let f = idx();
         let c = sample_expr(&f);
         let before = view_to_string(c);
@@ -708,6 +709,7 @@ mod tests {
 
     #[test]
     fn checkpoint_roundtrip_through_bytes() {
+        let _mode = enter_index_mode_for_test();
         let f = idx();
         let c = sample_expr(&f);
         let before = view_to_string(c);
@@ -722,6 +724,7 @@ mod tests {
 
     #[test]
     fn fresh_remap_does_not_reuse_source_addrs() {
+        let _mode = enter_index_mode_for_test();
         let f = idx();
         let c = sample_expr(&f);
         let src_addr = c.as_arena_addr().expect("heap handle in index mode");
@@ -742,6 +745,7 @@ mod tests {
 
     #[test]
     fn d_child_missing_reachable_child_is_rejected() {
+        let _mode = enter_index_mode_for_test();
         let f = idx();
         let c = sample_expr(&f);
         let mut slice = capture_slice(&[c], &[], &[], 0, 0);
@@ -771,6 +775,7 @@ mod tests {
 
     #[test]
     fn d_kont_missing_kont_root_is_rejected() {
+        let _mode = enter_index_mode_for_test();
         let f = idx();
         let c = sample_expr(&f);
         let k = f.atom("kont-frame-marker");
@@ -788,6 +793,7 @@ mod tests {
 
     #[test]
     fn closure_equals_gc_reachable_set() {
+        let _mode = enter_index_mode_for_test();
         let f = idx();
         let c = sample_expr(&f);
         let seed = c.as_arena_addr().expect("heap handle");
@@ -813,6 +819,7 @@ mod tests {
 
     #[test]
     fn restored_future_touch_not_freed_after_source_swept() {
+        let _mode = enter_index_mode_for_test();
         // The empirical discharge of `restored_future_touch_not_freed`: capture a
         // slice, then FORCE a GC cycle that sweeps the source closure's slots (the
         // source value is dropped + unrooted), then restore (FRESH re-intern) and
@@ -879,6 +886,7 @@ mod tests {
 
     #[test]
     fn restored_value_resumes_under_eval() {
+        let _mode = enter_index_mode_for_test();
         // The restored value must be a usable σ value: drive it through a trivial
         // structural check (its view must match the captured one), exercising a
         // read over the freshly re-interned store.

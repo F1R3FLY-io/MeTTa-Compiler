@@ -4959,12 +4959,14 @@ mod tests {
 //     systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=1000% \
 //     cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu \
 //       --release --lib --features index-gc \
-//       backend::eval::cesk::index_heap::tsan_concurrent_factory -- --nocapture --test-threads=1
+//       backend::eval::cesk::index_heap::tsan_concurrent_factory::concurrent_read_path_allocations_are_race_free \
+//       -- --ignored --exact --nocapture --test-threads=1
 // Expect: 0 TSan reports (no "WARNING: ThreadSanitizer: data race").
 //
-// Gated `feature = "index-gc"` (IndexFactory only allocates into the index heap
-// under that feature; `gc_mode_is_index()` inits to true there) and `not(loom)`
-// (uses std threads, not loom's instrumented model).
+// Ignored in the default libtest suite because it deliberately holds a global
+// index-heap read guard while joining worker threads. That is valid for the
+// isolated TSan gate but can deadlock with unrelated parallel tests that need
+// the global heap's write path. `not(loom)` keeps this on real std threads.
 #[cfg(all(test, not(loom)))]
 mod tsan_concurrent_factory {
     use super::*;
@@ -4972,6 +4974,7 @@ mod tsan_concurrent_factory {
     use std::sync::{Arc, Barrier};
 
     #[test]
+    #[ignore = "TSan-only isolation gate; run explicitly with --ignored --exact --test-threads=1"]
     fn concurrent_read_path_allocations_are_race_free() {
         // Index value mode (so `from_addr`/`view` decode the arena Addr) + close the
         // single-threaded collector gate (the regime in which concurrent `.read()`

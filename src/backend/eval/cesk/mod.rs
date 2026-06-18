@@ -92,9 +92,9 @@ pub use store::{AllocHint, AllocRegion, Store};
 pub use striped_queue::{current_worker_id, set_worker_id, StripedQueue, StripedTask};
 pub use tabling::{
     active_eval_set_is_empty, clear_active_eval_set, clear_subgoal_table, invalidate_subgoal_table,
-    is_actively_evaluating, is_seed_only_active, mark_eval_active, mark_recursive_active,
-    note_seed_cut, seed_cut_count, snapshot_active_hashes, unmark_eval_active,
-    unmark_recursive_active, with_subgoal_table, SeedActiveScope, SubgoalTable, TableLookup,
+    is_actively_evaluating, mark_eval_active, mark_recursive_active, snapshot_active_hashes,
+    unmark_eval_active, unmark_recursive_active, with_subgoal_table, SeedActiveScope,
+    SubgoalTable, TableLookup,
 };
 pub use thread_local_region::{
     is_thread_region_active, with_thread_local_region, RegionGuard, ThreadLocalRegion,

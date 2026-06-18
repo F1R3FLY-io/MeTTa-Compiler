@@ -71,69 +71,17 @@ thread_local! {
 /// (#309/#266: subgoals active on the FORKING thread's lineage when this worker
 /// was dispatched), so a fanned-out worker detects a parent-active cycle and cuts
 /// to the fixpoint EMPTY. The seed probe short-circuits on an empty seed map, so
-/// the FANOUT=0 / non-worker path stays byte-identical.
-// #309 frisbee-drop A/B (off by default -> byte-identical): when METTATRON_DISABLE_SEED is
-// set, is_actively_evaluating IGNORES the cross-thread SEEDED_ACTIVE_SET (only this thread's
-// own ACTIVE_EVAL_SET marks count). Tests whether the seed's over-cut of non-recursive
-// subgoals (e.g. the constant `(kb)` -> empty -> cascade) is the frisbee-drop root.
-fn seed_disabled() -> bool {
-    static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *F.get_or_init(|| std::env::var("METTATRON_DISABLE_SEED").is_ok())
-}
-
+/// the FANOUT=0 / non-worker path stays byte-identical. The seed carries ONLY
+/// genuinely recursive subgoals (precise seeding, see `snapshot_active_hashes`),
+/// so a seed hit is always a real cross-thread cycle whose fixpoint-EMPTY cut is
+/// correct — no non-recursive constant (e.g. `(kb)`) is ever in the seed.
 #[inline]
 pub fn is_actively_evaluating(expr_hash: u64) -> bool {
     ACTIVE_EVAL_SET.with(|set| set.borrow().get(&expr_hash).copied().unwrap_or(0) > 0)
-        || (!seed_disabled()
-            && SEEDED_ACTIVE_SET.with(|set| {
-                let s = set.borrow();
-                !s.is_empty() && s.get(&expr_hash).copied().unwrap_or(0) > 0
-            }))
-}
-
-/// #309/#266 frisbee-drop: true iff `expr_hash` is active SOLELY via the cross-thread
-/// `SEEDED_ACTIVE_SET` (and NOT this thread's own `ACTIVE_EVAL_SET`). A cut triggered only
-/// by the seed is TENTATIVE — the seed cuts the FIRST worker-occurrence of a parent-active
-/// subgoal, which is correct for a genuine cross-thread recursion but WRONG for a
-/// non-recursive one (the constant `(kb)` → EMPTY → cascade). The caller bumps
-/// `note_seed_cut()` so the enclosing subgoal's `CompleteSubgoal` skips tabling the
-/// transient result. A real same-thread recursion (own-active) is NOT seed-only and its
-/// fixpoint-EMPTY base IS correct to table.
-#[inline]
-pub fn is_seed_only_active(expr_hash: u64) -> bool {
-    if seed_disabled() {
-        return false;
-    }
-    let own = ACTIVE_EVAL_SET.with(|set| set.borrow().get(&expr_hash).copied().unwrap_or(0) > 0);
-    if own {
-        return false;
-    }
-    SEEDED_ACTIVE_SET.with(|set| {
-        let s = set.borrow();
-        !s.is_empty() && s.get(&expr_hash).copied().unwrap_or(0) > 0
-    })
-}
-
-thread_local! {
-    /// #309/#266 frisbee-drop: monotonic per-thread count of SEED-cuts (a seed-only
-    /// `is_actively_evaluating` hit that returned the fixpoint EMPTY). A subgoal whose
-    /// derivation window [push, fire] spans a bump produced a seed-TENTATIVE result and is
-    /// not tabled (see `Continuation::CompleteSubgoal.start_seed_cut`). The trampoline is
-    /// sequential per thread, so the delta over a subgoal's window counts exactly the
-    /// seed-cuts in ITS subtree.
-    static SEED_CUT_COUNTER: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-/// Read this thread's seed-cut counter (recorded into `CompleteSubgoal` at push).
-#[inline]
-pub fn seed_cut_count() -> u64 {
-    SEED_CUT_COUNTER.with(|c| c.get())
-}
-
-/// Record that a seed-only cut just fired on this thread.
-#[inline]
-pub fn note_seed_cut() {
-    SEED_CUT_COUNTER.with(|c| c.set(c.get().wrapping_add(1)));
+        || SEEDED_ACTIVE_SET.with(|set| {
+            let s = set.borrow();
+            !s.is_empty() && s.get(&expr_hash).copied().unwrap_or(0) > 0
+        })
 }
 
 // #309/#266 PRECISE SEEDING (complete fix): the cross-thread seed must carry ONLY genuinely

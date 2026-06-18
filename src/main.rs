@@ -1146,39 +1146,6 @@ fn main() {
     }
     timings.mark("mallopt");
 
-    // #309/#266 diagnostic harness: env-gated RSS watchdog. When
-    // METTATRON_RSS_LIMIT_MB is set, a low-overhead thread polls this process's
-    // resident size and exit(42)s BEFORE the cgroup OOM-killer fires — so the
-    // separate intermittent runaway is contained as a clean rc=42 (excluded from
-    // drop stats) instead of a dmesg OOM-kill event. No effect when unset.
-    #[cfg(target_os = "linux")]
-    if let Ok(raw) = std::env::var("METTATRON_RSS_LIMIT_MB") {
-        if let Ok(limit_mb) = raw.parse::<u64>() {
-            let limit_bytes = limit_mb.saturating_mul(1024 * 1024);
-            let _ = std::thread::Builder::new()
-                .name("rss-watchdog".to_string())
-                .spawn(move || {
-                    let page = 4096u64;
-                    loop {
-                        if let Ok(statm) = std::fs::read_to_string("/proc/self/statm") {
-                            if let Some(rss) = statm.split_whitespace().nth(1) {
-                                if let Ok(rss_pages) = rss.parse::<u64>() {
-                                    if rss_pages.saturating_mul(page) > limit_bytes {
-                                        eprintln!(
-                                            "RSS-WATCHDOG: resident exceeded {limit_mb} MB — exit(42) before OOM"
-                                        );
-                                        std::process::exit(42);
-                                    }
-                                }
-                            }
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(50));
-                    }
-                });
-        }
-    }
-    timings.mark("rss_watchdog");
-
     // Install signal-triggered diagnostic handlers (SIGTERM/SIGUSR1) early.
     // Also auto-installed by global_allocator(), but explicit call ensures
     // coverage even if main() fails before first allocation.
@@ -1266,10 +1233,6 @@ fn main() {
         let midloop = mettatron::backend::eval::cesk::index_heap::index_gc::midloop_cycles_run();
         eprintln!("INDEX_GC_CYCLES_RUN={cycles} INDEX_GC_MIDLOOP_CYCLES={midloop}");
     }
-
-    // #309 frisbee-drop deterministic capture: drain the lock-free subgoal-completion
-    // log to METTATRON_CAPTURE_FILE (no-op unless METTATRON_CAPTURE_SUBGOAL is set).
-    mettatron::backend::eval::trampoline::flush_subgoal_capture();
 
     if let Err(e) = write_output(options.output.as_deref(), &output) {
         eprintln!("Error: {}", e);

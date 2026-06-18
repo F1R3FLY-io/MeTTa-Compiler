@@ -72,13 +72,125 @@ thread_local! {
 /// was dispatched), so a fanned-out worker detects a parent-active cycle and cuts
 /// to the fixpoint EMPTY. The seed probe short-circuits on an empty seed map, so
 /// the FANOUT=0 / non-worker path stays byte-identical.
+// #309 frisbee-drop A/B (off by default -> byte-identical): when METTATRON_DISABLE_SEED is
+// set, is_actively_evaluating IGNORES the cross-thread SEEDED_ACTIVE_SET (only this thread's
+// own ACTIVE_EVAL_SET marks count). Tests whether the seed's over-cut of non-recursive
+// subgoals (e.g. the constant `(kb)` -> empty -> cascade) is the frisbee-drop root.
+fn seed_disabled() -> bool {
+    static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *F.get_or_init(|| std::env::var("METTATRON_DISABLE_SEED").is_ok())
+}
+
 #[inline]
 pub fn is_actively_evaluating(expr_hash: u64) -> bool {
     ACTIVE_EVAL_SET.with(|set| set.borrow().get(&expr_hash).copied().unwrap_or(0) > 0)
-        || SEEDED_ACTIVE_SET.with(|set| {
-            let s = set.borrow();
-            !s.is_empty() && s.get(&expr_hash).copied().unwrap_or(0) > 0
-        })
+        || (!seed_disabled()
+            && SEEDED_ACTIVE_SET.with(|set| {
+                let s = set.borrow();
+                !s.is_empty() && s.get(&expr_hash).copied().unwrap_or(0) > 0
+            }))
+}
+
+/// #309/#266 frisbee-drop: true iff `expr_hash` is active SOLELY via the cross-thread
+/// `SEEDED_ACTIVE_SET` (and NOT this thread's own `ACTIVE_EVAL_SET`). A cut triggered only
+/// by the seed is TENTATIVE — the seed cuts the FIRST worker-occurrence of a parent-active
+/// subgoal, which is correct for a genuine cross-thread recursion but WRONG for a
+/// non-recursive one (the constant `(kb)` → EMPTY → cascade). The caller bumps
+/// `note_seed_cut()` so the enclosing subgoal's `CompleteSubgoal` skips tabling the
+/// transient result. A real same-thread recursion (own-active) is NOT seed-only and its
+/// fixpoint-EMPTY base IS correct to table.
+#[inline]
+pub fn is_seed_only_active(expr_hash: u64) -> bool {
+    if seed_disabled() {
+        return false;
+    }
+    let own = ACTIVE_EVAL_SET.with(|set| set.borrow().get(&expr_hash).copied().unwrap_or(0) > 0);
+    if own {
+        return false;
+    }
+    SEEDED_ACTIVE_SET.with(|set| {
+        let s = set.borrow();
+        !s.is_empty() && s.get(&expr_hash).copied().unwrap_or(0) > 0
+    })
+}
+
+thread_local! {
+    /// #309/#266 frisbee-drop: monotonic per-thread count of SEED-cuts (a seed-only
+    /// `is_actively_evaluating` hit that returned the fixpoint EMPTY). A subgoal whose
+    /// derivation window [push, fire] spans a bump produced a seed-TENTATIVE result and is
+    /// not tabled (see `Continuation::CompleteSubgoal.start_seed_cut`). The trampoline is
+    /// sequential per thread, so the delta over a subgoal's window counts exactly the
+    /// seed-cuts in ITS subtree.
+    static SEED_CUT_COUNTER: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Read this thread's seed-cut counter (recorded into `CompleteSubgoal` at push).
+#[inline]
+pub fn seed_cut_count() -> u64 {
+    SEED_CUT_COUNTER.with(|c| c.get())
+}
+
+/// Record that a seed-only cut just fired on this thread.
+#[inline]
+pub fn note_seed_cut() {
+    SEED_CUT_COUNTER.with(|c| c.set(c.get().wrapping_add(1)));
+}
+
+// #309/#266 PRECISE SEEDING (complete fix): the cross-thread seed must carry ONLY genuinely
+// RECURSIVE subgoals (a fixpoint head re-entering itself), NOT non-recursive constants like
+// `(kb)` — seeding the latter makes a worker cut its FIRST `(kb)` to EMPTY (the frisbee-drop
+// root). Recursion is detected DYNAMICALLY (no static rule analysis; survives add-atom):
+// HEAD_ACTIVE_SET counts how many subgoals of each HEAD are on this thread's stack; a
+// subgoal pushed while its head is ALREADY active is a recursive occurrence and is recorded
+// in RECURSIVE_ACTIVE_SET, which is what `snapshot_active_hashes` seeds (under the gate).
+thread_local! {
+    /// head_hash -> count of subgoals with that head currently active on this thread.
+    static HEAD_ACTIVE_SET: RefCell<HashMap<u64, u32>> = RefCell::new(HashMap::with_capacity(32));
+    /// subgoal_hash -> count, for subgoals that are RECURSIVE occurrences (their head was
+    /// already active when they were pushed). Seeded into workers; non-recursive constants
+    /// (`(kb)`) never appear here.
+    static RECURSIVE_ACTIVE_SET: RefCell<HashMap<u64, u32>> =
+        RefCell::new(HashMap::with_capacity(32));
+}
+
+/// Companion to `mark_eval_active` at the trampoline subgoal-push: track head-recursion so
+/// `snapshot_active_hashes` can seed ONLY recursive subgoals. `head_hash` identifies the
+/// HEAD symbol (same for `(H a)` and `(H b)`), so re-entering `H` is detected.
+#[inline]
+pub fn mark_recursive_active(expr_hash: u64, head_hash: u64) {
+    let was_active = HEAD_ACTIVE_SET.with(|h| {
+        let mut m = h.borrow_mut();
+        let c = m.entry(head_hash).or_insert(0);
+        let was = *c;
+        *c += 1;
+        was >= 1
+    });
+    if was_active {
+        RECURSIVE_ACTIVE_SET.with(|r| *r.borrow_mut().entry(expr_hash).or_insert(0) += 1);
+    }
+}
+
+/// Companion to `unmark_eval_active`. Balanced with `mark_recursive_active`.
+#[inline]
+pub fn unmark_recursive_active(expr_hash: u64, head_hash: u64) {
+    HEAD_ACTIVE_SET.with(|h| {
+        let mut m = h.borrow_mut();
+        if let Some(c) = m.get_mut(&head_hash) {
+            *c = c.saturating_sub(1);
+            if *c == 0 {
+                m.remove(&head_hash);
+            }
+        }
+    });
+    RECURSIVE_ACTIVE_SET.with(|r| {
+        let mut m = r.borrow_mut();
+        if let Some(c) = m.get_mut(&expr_hash) {
+            *c = c.saturating_sub(1);
+            if *c == 0 {
+                m.remove(&expr_hash);
+            }
+        }
+    });
 }
 
 /// #309/#266 root cause #2: is THIS thread mid-derivation (some subgoal marked
@@ -131,6 +243,10 @@ pub fn unmark_eval_active(expr_hash: u64) {
 #[inline]
 pub fn clear_active_eval_set() {
     ACTIVE_EVAL_SET.with(|set| set.borrow_mut().clear());
+    // #309/#266 precise seeding: the head-recursion tracking parallels ACTIVE_EVAL_SET, so
+    // clear it in lockstep (same call sites, same balance discipline).
+    HEAD_ACTIVE_SET.with(|set| set.borrow_mut().clear());
+    RECURSIVE_ACTIVE_SET.with(|set| set.borrow_mut().clear());
 }
 
 /// #309/#266 root cause #1: snapshot the hashes active on THIS (forking) thread's
@@ -142,7 +258,12 @@ pub fn clear_active_eval_set() {
 #[inline]
 pub fn snapshot_active_hashes() -> Option<Arc<SmallVec<[u64; 8]>>> {
     let mut hashes: SmallVec<[u64; 8]> = SmallVec::new();
-    ACTIVE_EVAL_SET.with(|set| {
+    // #309/#266 PRECISE SEEDING: seed ONLY genuinely RECURSIVE subgoals (a fixpoint head
+    // that re-enters itself), tracked in RECURSIVE_ACTIVE_SET. Seeding a NON-recursive
+    // subgoal made a worker cut its first occurrence to the fixpoint EMPTY — correct for a
+    // real recursion, but WRONG for a constant like `(kb)` (→ empty → cascade → frisbee-drop).
+    // Real PLN fixpoint recursions (PLN.Derive) still seed/cut, so root-cause-#1 stays fixed.
+    RECURSIVE_ACTIVE_SET.with(|set| {
         for (&h, &c) in set.borrow().iter() {
             if c > 0 {
                 hashes.push(h);

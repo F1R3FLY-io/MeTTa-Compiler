@@ -1765,6 +1765,20 @@ pub enum Continuation {
         /// the tabled result is a torn read (it scanned a space that changed
         /// mid-derivation) and must NOT be cached.
         start_space_epoch: u64,
+        /// #309/#266 frisbee-drop: this thread's SEED_CUT_COUNTER when evaluation
+        /// started. A seed-cut (a cross-thread SEEDED_ACTIVE_SET hit returning the
+        /// fixpoint EMPTY) during this subgoal's derivation makes the result
+        /// TENTATIVE — the seed cuts the FIRST worker-occurrence of a parent-active
+        /// subgoal, which is correct for a genuine recursion but wrong for a
+        /// non-recursive one (e.g. the constant `(kb)` → empty → cascade). Tabling a
+        /// seed-tainted result FREEZES the transient wrong value (fact-7); recompute
+        /// instead. If the counter advanced during evaluation, the result must NOT
+        /// be cached.
+        start_seed_cut: u64,
+        /// #309/#266 precise seeding: hash of this subgoal's HEAD symbol, so the
+        /// balanced `unmark_recursive_active` can decrement `HEAD_ACTIVE_SET` for the
+        /// same head that `mark_recursive_active` incremented at push.
+        start_head_hash: u64,
     },
 
     /// I-6: Complete a thunk after evaluation finishes.

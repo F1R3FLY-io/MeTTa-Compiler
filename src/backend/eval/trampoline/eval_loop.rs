@@ -1732,6 +1732,7 @@ fn dispatch_rule_matches<C: EvalContext>(
             metta_env,
             actual_budget_acquired,
             current_depth,
+            depth,
             dispatch_demand,
         );
         let outer_carrying_arc: crate::backend::eval::trampoline::types::SharedBindings =
@@ -1945,6 +1946,170 @@ fn dispatch_rule_matches<C: EvalContext>(
 
 // Thread-local depth counter for parallel branch evaluation.
 //
+// #309/#266 frisbee-drop A/B knob: the worker initial trampoline-depth seed, read
+// ONCE from METTATRON_WORKER_DEPTH_SEED (default 0 = the original `depth: 0` restart
+// = baseline-with-bug). 3 = the constant above both memo gates (>=2 subgoal / >=3
+// thunk) under test. One binary, env-toggled → a clean control(0)/treatment(3) A/B
+// (experiment id 66). NOTE: default 0 keeps current behavior (still buggy) until the
+// experiment picks the shipped value.
+fn worker_depth_seed() -> usize {
+    static SEED: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *SEED.get_or_init(|| {
+        std::env::var("METTATRON_WORKER_DEPTH_SEED")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0)
+    })
+}
+
+// #309 frisbee-drop pass-2: a small set of target subgoal hashes (hex, comma-sep)
+// from METTATRON_CAPTURE_HASHES whose VALUE we want to identify. Checked per subgoal
+// lookup; matches are rare (a handful) so the eprintln is minimal-perturbation.
+fn capture_hashes() -> &'static std::collections::HashSet<u64> {
+    static H: std::sync::OnceLock<std::collections::HashSet<u64>> = std::sync::OnceLock::new();
+    H.get_or_init(|| {
+        std::env::var("METTATRON_CAPTURE_HASHES")
+            .ok()
+            .map(|s| {
+                s.split(',')
+                    .filter_map(|x| u64::from_str_radix(x.trim(), 16).ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+}
+
+// #309 frisbee-drop FIX A/B (TLA SubgoalQueryGenIsolation): two candidate guards for the
+// SubgoalTable freezing a transient partial/empty completion under parallel fanout.
+// Off by default → byte-identical. METTATRON_SKIP_EMPTY_TABLING: never table an EMPTY
+// completion (it is cheap to recompute and is the dominant frozen-bad value: Unit/0x0).
+// METTATRON_SKIP_WORKER_TABLING: never table a completion produced inside a parallel
+// worker (the partial-at-risk path) — keeps main-thread tabling.
+fn skip_empty_tabling() -> bool {
+    static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *F.get_or_init(|| std::env::var("METTATRON_SKIP_EMPTY_TABLING").is_ok())
+}
+fn skip_worker_tabling() -> bool {
+    static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *F.get_or_init(|| std::env::var("METTATRON_SKIP_WORKER_TABLING").is_ok())
+}
+// #309 frisbee-drop FIX (A/B-gated): when METTATRON_SKIP_SEED_TAINTED is set, a subgoal
+// whose derivation window spanned a SEED-cut (its `start_seed_cut` != the current
+// `seed_cut_count()`) is NOT tabled — the seed's over-cut produced a TENTATIVE result
+// (e.g. `(kb)` → empty) that must be recomputed, not frozen (fact-7). Off => byte-identical.
+fn skip_seed_tainted() -> bool {
+    static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *F.get_or_init(|| std::env::var("METTATRON_SKIP_SEED_TAINTED").is_ok())
+}
+
+// #309 frisbee-drop DETERMINISTIC CAPTURE (non-perturbing): a lock-free crossbeam
+// unbounded channel logging every CompleteSubgoal tabling as (expr_hash, depth,
+// result_count, result_content_hash), gated by METTATRON_CAPTURE_SUBGOAL. The lock-free
+// send avoids the stderr-mutex serialization that made an eprintln probe a Heisenbug (it
+// masked the race). The result_content_hash is the divergence signal: the PLN computation
+// is semantically DETERMINISTIC, so a parallel run that produces a DIFFERENT value for the
+// SAME subgoal hash localizes the parallel-impl nondeterminism. Drained to
+// METTATRON_CAPTURE_FILE at program exit by flush_subgoal_capture().
+#[allow(clippy::type_complexity)]
+fn subgoal_capture_chan() -> Option<&'static (
+    crossbeam_channel::Sender<(u64, u32, u32, u64, u8)>,
+    crossbeam_channel::Receiver<(u64, u32, u32, u64, u8)>,
+)> {
+    static CAP: std::sync::OnceLock<
+        Option<(
+            crossbeam_channel::Sender<(u64, u32, u32, u64, u8)>,
+            crossbeam_channel::Receiver<(u64, u32, u32, u64, u8)>,
+        )>,
+    > = std::sync::OnceLock::new();
+    CAP.get_or_init(|| {
+        if std::env::var("METTATRON_CAPTURE_SUBGOAL").is_ok() {
+            Some(crossbeam_channel::unbounded())
+        } else {
+            None
+        }
+    })
+    .as_ref()
+}
+
+#[inline]
+fn capture_subgoal_complete(
+    expr_hash: u64,
+    depth: usize,
+    result_count: u32,
+    result_hash: u64,
+    ctx: u8,
+) {
+    if let Some((s, _)) = subgoal_capture_chan() {
+        let _ = s.send((expr_hash, depth as u32, result_count, result_hash, ctx));
+    }
+}
+
+// #309 frisbee-drop pass-3: a second lock-free channel logging the subgoal CALL EDGE
+// (parent_hash, child_hash, depth) at lookup time, so a drop-vs-correct diff can trace
+// from the lost stamp/deduction subgoals UP to the parent whose evaluation diverges.
+// Same env gate. (Within-thread: the parent is the nearest pending CompleteSubgoal on
+// the continuation stack; cross-fanout edges show parent=0 / a worker-local root.)
+#[allow(clippy::type_complexity)]
+fn subgoal_edge_chan() -> Option<&'static (
+    crossbeam_channel::Sender<(u64, u64, u32)>,
+    crossbeam_channel::Receiver<(u64, u64, u32)>,
+)> {
+    static EDGE: std::sync::OnceLock<
+        Option<(
+            crossbeam_channel::Sender<(u64, u64, u32)>,
+            crossbeam_channel::Receiver<(u64, u64, u32)>,
+        )>,
+    > = std::sync::OnceLock::new();
+    EDGE.get_or_init(|| {
+        // Gated on its OWN env (NOT METTATRON_CAPTURE_SUBGOAL): the per-LOOKUP edge probe
+        // is far hotter than per-COMPLETE and masks the #309 race (0 drops/30 when on).
+        // Keep it separable so complete-only capture stays non-perturbing.
+        if std::env::var("METTATRON_CAPTURE_EDGE").is_ok() {
+            Some(crossbeam_channel::unbounded())
+        } else {
+            None
+        }
+    })
+    .as_ref()
+}
+
+#[inline]
+fn capture_subgoal_edge(parent_hash: u64, child_hash: u64, depth: usize) {
+    if let Some((s, _)) = subgoal_edge_chan() {
+        let _ = s.send((parent_hash, child_hash, depth as u32));
+    }
+}
+
+/// #309 frisbee-drop capture: drain the lock-free subgoal-completion + call-edge logs
+/// to METTATRON_CAPTURE_FILE (default /tmp/subgoal_capture.log) and
+/// METTATRON_CAPTURE_EDGE_FILE (default /tmp/subgoal_edges.log). Call once at program
+/// exit. No-op unless METTATRON_CAPTURE_SUBGOAL is set.
+pub fn flush_subgoal_capture() {
+    use std::io::Write;
+    if let Some((_, r)) = subgoal_capture_chan() {
+        let path = std::env::var("METTATRON_CAPTURE_FILE")
+            .unwrap_or_else(|_| "/tmp/subgoal_capture.log".to_string());
+        let mut buf = String::new();
+        while let Ok((h, d, count, rhash, ctx)) = r.try_recv() {
+            buf.push_str(&format!("{h:016x} {d} {count} {rhash:016x} {ctx}\n"));
+        }
+        if let Ok(mut f) = std::fs::File::create(&path) {
+            let _ = f.write_all(buf.as_bytes());
+        }
+    }
+    if let Some((_, r)) = subgoal_edge_chan() {
+        let path = std::env::var("METTATRON_CAPTURE_EDGE_FILE")
+            .unwrap_or_else(|_| "/tmp/subgoal_edges.log".to_string());
+        let mut buf = String::new();
+        while let Ok((p, c, d)) = r.try_recv() {
+            buf.push_str(&format!("{:016x} {:016x} {}\n", p, c, d));
+        }
+        if let Ok(mut f) = std::fs::File::create(&path) {
+            let _ = f.write_all(buf.as_bytes());
+        }
+    }
+}
+
 // Tracks the current nesting depth of `parallel_branch_eval` on this thread.
 // At depth >= `MAX_PARALLEL_DEPTH`, the gate falls through to the sequential
 // path. Budget slots are scaled by `4^(-depth)` at each nesting level to
@@ -1952,6 +2117,15 @@ fn dispatch_rule_matches<C: EvalContext>(
 // available parallelism.
 thread_local! {
     static PARALLEL_BRANCH_DEPTH: Cell<u32> = const { Cell::new(0) };
+
+    /// #309/#266 frisbee-drop: the trampoline depth a freshly-dispatched worker
+    /// should START its initial `WorkItem::Eval` at, so the `depth >= 2` / `>= 3`
+    /// memoization+cut GATES make the SAME decisions a worker's sub-derivations
+    /// would inline (where they sit deep), instead of the divergent decisions a
+    /// hard `depth: 0` restart produces near the worker's root. One-shot: a worker
+    /// sets it before `eval_trampoline_with_carrying`; `eval_trampoline_inner`
+    /// reads-and-resets it (so nested/main activations default to 0, unchanged).
+    static WORKER_INITIAL_DEPTH: Cell<usize> = const { Cell::new(0) };
 
     /// Current evaluation demand level on this thread.
     ///
@@ -2533,6 +2707,10 @@ fn parallel_dispatch(
     // the now-deleted `parallel_branch_eval`.
     _budget_acquired: u32,
     caller_depth: u32,
+    // #309/#266 frisbee-drop: the dispatching trampoline depth, so each worker's
+    // initial `WorkItem::Eval` starts at the branch's inline depth (this + 1) and
+    // the `depth >= 2`/`>= 3` memo gates make the same decisions they would inline.
+    trampoline_depth: usize,
     demand: crate::backend::eval::cesk::coroutine::Demand,
 ) -> crate::backend::eval::trampoline::types::ParallelDispatchHandle {
     use std::sync::{Arc, Condvar, Mutex};
@@ -2655,6 +2833,19 @@ fn parallel_dispatch(
                 done_pair: Arc::clone(&done_pair),
             };
             PARALLEL_BRANCH_DEPTH.with(|d| d.set(child_depth));
+            // #309/#266 frisbee-drop FIX: seed the worker's initial trampoline depth
+            // to the branch's inline depth (parent dispatch depth + 1), FLOORED at the
+            // memo-gate ceiling 3 (the `depth >= 3` thunk gate; the subgoal gate is
+            // >= 2). A fanned-out worker is part of a DEEP parallel derivation, so its
+            // sub-derivations must take the MEMOIZED/cut path (>=2/>=3) like inline —
+            // but the dispatch POINT can itself be shallow (e.g. the top-level PLN
+            // collapse at depth ~0-1), which `trampoline_depth + 1` alone leaves below
+            // the gate. The floor clears it. Without this a hard `depth:0` restart
+            // diverged the gates → froze an empty subgoal bag (the frisbee-drop;
+            // a constant-3 seed eliminated it 0/24; bare depth+1 left 1/24 on the
+            // shallow-collapse path).
+            let _ = trampoline_depth;
+            WORKER_INITIAL_DEPTH.with(|c| c.set(worker_depth_seed()));
             // ── D2.1 WorkerEnter gate under the dedicated index-GC driver ──
             // The TLA+ `WorkerEnter` admission guard (`~gcRequested`): a NEW
             // worker must NOT join the active eval set while a rendezvous GC is
@@ -3374,7 +3565,10 @@ fn parallel_collapse_dispatch(
     env: crate::backend::environment::core::MettaEnvironment,
     _budget_acquired: u32,
     caller_depth: u32,
-    _eval_depth: usize,
+    // #309/#266 frisbee-drop: the dispatching trampoline depth (was a dead param);
+    // each collapse worker's initial Eval starts at this + 1 so the memo gates make
+    // the same decisions they would inline.
+    trampoline_depth: usize,
 ) -> crate::backend::eval::trampoline::types::ParallelCollapseDispatchHandle {
     use std::sync::{Arc, Condvar, Mutex};
 
@@ -3460,6 +3654,19 @@ fn parallel_collapse_dispatch(
                 done_pair: Arc::clone(&done_pair),
             };
             PARALLEL_BRANCH_DEPTH.with(|d| d.set(child_depth));
+            // #309/#266 frisbee-drop FIX: seed the worker's initial trampoline depth
+            // to the branch's inline depth (parent dispatch depth + 1), FLOORED at the
+            // memo-gate ceiling 3 (the `depth >= 3` thunk gate; the subgoal gate is
+            // >= 2). A fanned-out worker is part of a DEEP parallel derivation, so its
+            // sub-derivations must take the MEMOIZED/cut path (>=2/>=3) like inline —
+            // but the dispatch POINT can itself be shallow (e.g. the top-level PLN
+            // collapse at depth ~0-1), which `trampoline_depth + 1` alone leaves below
+            // the gate. The floor clears it. Without this a hard `depth:0` restart
+            // diverged the gates → froze an empty subgoal bag (the frisbee-drop;
+            // a constant-3 seed eliminated it 0/24; bare depth+1 left 1/24 on the
+            // shallow-collapse path).
+            let _ = trampoline_depth;
+            WORKER_INITIAL_DEPTH.with(|c| c.set(worker_depth_seed()));
             // ── D2.1 WorkerEnter gate under the dedicated index-GC driver ── mirror of the parallel-dispatch
             //    worker above; see the full rationale there. Blocks a new collapse
             //    worker from joining `active` while a dedicated rendezvous GC is
@@ -3928,7 +4135,10 @@ fn eval_trampoline_inner<C: EvalContext>(
         ws.push(WorkItem::Eval {
             value,
             env: Arc::new(env.clone()),
-            depth: 0,
+            // #309/#266 frisbee-drop: start at the parent's trampoline depth a
+            // dispatched worker seeded (one-shot; 0 for the main/nested activations
+            // that never set it — FANOUT=0 byte-identical).
+            depth: WORKER_INITIAL_DEPTH.with(|c| c.replace(0)),
             is_tail_call: false,
             expected_type: None,
             demand: None,
@@ -4779,7 +4989,30 @@ fn eval_trampoline_inner<C: EvalContext>(
                     //     `interpreter.rs:392` depth-limit response. T04/047
                     //     fixture `(pragma! max-stack-depth 20) (= (rec) (rec)) !(rec)`
                     //     asserts the Error.
+                    if subgoal_edge_chan().is_some() {
+                        let parent = continuations
+                            .iter()
+                            .rev()
+                            .find_map(|c| match c {
+                                Continuation::CompleteSubgoal { expr_hash, .. } => Some(*expr_hash),
+                                _ => None,
+                            })
+                            .unwrap_or(0);
+                        capture_subgoal_edge(parent, tabling_hash, depth);
+                    }
+                    if !capture_hashes().is_empty() && capture_hashes().contains(&tabling_hash) {
+                        eprintln!("FT_VAL {:016x} d={} v={:.320?}", tabling_hash, depth, value); // #309 pass-2 (temporary)
+                    }
                     if crate::backend::eval::cesk::is_actively_evaluating(tabling_hash) {
+                        // #309 frisbee-drop: a SEED-only cut (cross-thread SEEDED_ACTIVE_SET,
+                        // not this thread's own recursion) returns a TENTATIVE fixpoint EMPTY.
+                        // Bump the thread's seed-cut counter so the enclosing subgoal's
+                        // CompleteSubgoal does NOT table the transient result (which would
+                        // freeze e.g. a wrongly-cut `(kb)` → cascade). A real own-stack
+                        // recursion is not seed-only and its EMPTY base stays cacheable.
+                        if crate::backend::eval::cesk::is_seed_only_active(tabling_hash) {
+                            crate::backend::eval::cesk::note_seed_cut();
+                        }
                         let user_set_pragma =
                             env.get_max_stack_depth().map(|d| d != 1000).unwrap_or(true); // None = (pragma! max-stack-depth 0) → unlimited, treat as user-set
                         #[cfg(feature = "trace")]
@@ -4908,13 +5141,27 @@ fn eval_trampoline_inner<C: EvalContext>(
                             );
                             if !already_pending {
                                 // First evaluation: mark active, push CompleteSubgoal.
+                                // #309 precise seeding: hash the HEAD symbol so head-recursion
+                                // (a head re-entering itself) is tracked; non-recursive heads
+                                // like `(kb)` are then excluded from the cross-thread seed.
+                                let head_hash = value
+                                    .as_sexpr()
+                                    .and_then(|items| items.first())
+                                    .map(|h| h.hash_value())
+                                    .unwrap_or(0);
                                 crate::backend::eval::cesk::mark_eval_active(tabling_hash);
+                                crate::backend::eval::cesk::mark_recursive_active(
+                                    tabling_hash,
+                                    head_hash,
+                                );
                                 continuations.push(Continuation::CompleteSubgoal {
                                     expr_hash: tabling_hash,
                                     env: env.clone(),
                                     depth,
                                     start_epoch: mutation_epoch(),
                                     start_space_epoch: space_mutation_epoch(),
+                                    start_seed_cut: crate::backend::eval::cesk::seed_cut_count(),
+                                    start_head_hash: head_hash,
                                 });
                             }
                         }
@@ -7219,6 +7466,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     metta_env,
                                     par_budget,
                                     current_depth,
+                                    depth,
                                     amb_demand,
                                 );
                                 let env_for_resume = env.clone();
@@ -10651,6 +10899,7 @@ fn process_continuation<C: EvalContext>(
                             metta_env,
                             par_budget,
                             current_depth,
+                            depth,
                             crate::backend::eval::cesk::coroutine::Demand::All,
                         );
                         let base_results: SmallVec<[BoundValue; 2]> = SmallVec::from_vec(results);
@@ -18427,12 +18676,16 @@ fn process_continuation<C: EvalContext>(
             depth: _depth,
             start_epoch,
             start_space_epoch,
+            start_seed_cut,
+            start_head_hash,
         } => {
             let (result_values, result_env) = result;
 
             // Unmark from active evaluation set — this expression is
             // no longer on the call stack.
             crate::backend::eval::cesk::unmark_eval_active(expr_hash);
+            // #309 precise seeding: balanced decrement of the head-recursion tracking.
+            crate::backend::eval::cesk::unmark_recursive_active(expr_hash, start_head_hash);
 
             // Only cache if no mutations occurred during evaluation.
             // If the epoch changed, the expression (or something it
@@ -18460,9 +18713,44 @@ fn process_continuation<C: EvalContext>(
                 // within_query_cache_isolation_contract for enforcement.
                 let cached: smallvec::SmallVec<[MettaValue; 2]> =
                     result_values.iter().map(|(v, _b)| v.clone()).collect();
-                crate::backend::eval::cesk::with_subgoal_table(|t| {
-                    t.complete(expr_hash, cached);
-                });
+                // #309 divergence signal: order-insensitive XOR of per-result content
+                // hashes (commutative ⇒ SET identity, robust to collection order) + count.
+                // `hash_value()` is cached (O(1)) so this stays non-perturbing.
+                // #309 QueryGenGuard diagnosis (LOCK-FREE, non-masking): capture each
+                // completion's result-hash + CONTEXT (ctx byte: bit0=in_worker,
+                // bit1=active_eval_set_empty, bit2=fanout-pending). Offline we filter the BAD
+                // completions (rh != expr_hash, since the targets are self-returning normal
+                // forms) and read their ctx -> the tentative predicate the guard keys on.
+                if subgoal_capture_chan().is_some() {
+                    let result_hash = cached.iter().fold(0u64, |acc, v| acc ^ v.hash_value());
+                    let ctx: u8 = (IS_PARALLEL_WORKER.with(|f| f.get()) as u8)
+                        | ((crate::backend::eval::cesk::active_eval_set_is_empty() as u8) << 1)
+                        | ((continuations.iter().any(|c| {
+                            matches!(
+                                c,
+                                Continuation::WaitForParallel { .. }
+                                    | Continuation::WaitForParallelCollapse { .. }
+                            )
+                        }) as u8)
+                            << 2);
+                    capture_subgoal_complete(
+                        expr_hash,
+                        _depth,
+                        cached.len() as u32,
+                        result_hash,
+                        ctx,
+                    );
+                }
+                // #309 frisbee-drop A/B gates (off by default → byte-identical).
+                let skip_table = (cached.is_empty() && skip_empty_tabling())
+                    || (skip_worker_tabling() && IS_PARALLEL_WORKER.with(|f| f.get()))
+                    || (skip_seed_tainted()
+                        && start_seed_cut != crate::backend::eval::cesk::seed_cut_count());
+                if !skip_table {
+                    crate::backend::eval::cesk::with_subgoal_table(|t| {
+                        t.complete(expr_hash, cached);
+                    });
+                }
             }
 
             #[cfg(feature = "trace")]

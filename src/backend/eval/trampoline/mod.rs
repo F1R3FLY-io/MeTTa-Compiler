@@ -40,6 +40,9 @@ mod context;
 pub(crate) mod dispatch_hints;
 pub mod engine;
 pub(crate) mod eval_loop;
+// #309 frisbee-drop deterministic capture: public re-export so the CLI (main.rs, a
+// separate crate) can drain the lock-free subgoal-completion log at program exit.
+pub use eval_loop::flush_subgoal_capture;
 pub mod session_context;
 pub(crate) mod types;
 pub mod unification;
